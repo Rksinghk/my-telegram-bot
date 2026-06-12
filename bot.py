@@ -1,23 +1,27 @@
 import os
 import asyncio
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Railway ke Variables se Token uthane ka code
+# Logs setup karna taaki pata chale bot kya kar raha hai
+logging.basicConfig(level=logging.INFO)
+
+# Railway ke Variables se Token uthana
 API_TOKEN = os.getenv('API_TOKEN')
 
-# Agar token na mile toh error dikhaye
 if not API_TOKEN:
-    raise ValueError("API_TOKEN environment variable is missing!")
+    logging.error("API_TOKEN variable missing in Railway!")
+    exit(1)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    # Banner image ka URL
-    photo_url = "https://example.com/your-banner.jpg"
+    # Banner image ka URL (aap isse change kar sakte hain)
+    photo_url = "https://images.unsplash.com/photo-1633158829585-23ba8f7c8caf?q=80&w=500&auto=format&fit=crop"
     
     caption = (
         f"👋 **HELLOW, {message.from_user.full_name}!**\n\n"
@@ -36,10 +40,16 @@ async def start(message: types.Message):
         [InlineKeyboardButton(text="✅ Verify", callback_data="verify")]
     ])
 
-    await bot.send_photo(chat_id=message.chat.id, photo=photo_url, caption=caption, reply_markup=keyboard, parse_mode="Markdown")
+    await bot.send_photo(
+        chat_id=message.chat.id, 
+        photo=photo_url, 
+        caption=caption, 
+        reply_markup=keyboard, 
+        parse_mode="Markdown"
+    )
 
 async def main():
-    print("Bot polling started...")
+    logging.info("Bot polling started...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
