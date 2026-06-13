@@ -23,24 +23,20 @@ async def start(message: types.Message):
     # Banner image ka URL
     photo_url = "https://images.unsplash.com/photo-1633158829585-23ba8f7c8caf?q=80&w=500&auto=format&fit=crop"
     
-    # Aapki di gayi text
+    # Aapka naya text
     caption = (
-        "🔺 **Welcome to X Files Bot!** 🔺\n\n"
-        "🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹🔹\n\n"
-        "⏰ **Search and access exclusive files easily.**\n"
-        "🟡 **Download content with fast speed** 🔄\n"
-        "📌 **Ready for an amazing show✨ From the latest releases to timeless classics, we've got something for everyone!**\n"
-        "💠  🔛 **Safe, And Secure** 🔒 💠\n\n"
-        "➖➖➖➖➖➖➖➖➖➖➖\n\n"
-        "📲 **JOIN REQUIRED CHANNELS TO UNLOCK BOT.**\n"
-        "✅ **AFTER JOINING CLICK VERIFY**"
+        f"✦ 𝗪𝗘𝗟𝗖𝗢𝗠𝗘 𝗧𝗢 {message.from_user.first_name} ✦\n\n"
+        "❖ 𝙲𝚘𝚖𝚙𝚕𝚎𝚝𝚎 𝚂𝚒𝚖𝚙𝚕𝚎 𝚃𝚊𝚜𝚔\n"
+        "☯  𝙴𝚊𝚛𝚗 ₹𝟺𝟶𝟶 𝚁𝚎𝚠𝚊𝚛𝚍\n"
+        "〄 𝙹𝚘𝚒𝚗 𝟻 𝙾𝚏𝚏𝚒𝚌𝚒𝚊𝚕 𝙲𝚑𝚊𝚗𝚗𝚎𝚕𝚜\n"
+        "⚿  𝚄𝚗𝚕𝚘𝚌𝚔 𝙱𝚘𝚝 𝙰𝚌𝚌𝚎𝚜𝚜\n"
+        "☑  𝚃𝚊𝚙 𝚅𝚎𝚛𝚒𝚏𝚢 𝙰𝚏𝚝𝚎𝚛 𝙹𝚘𝚒𝚗𝚒𝚗𝚐\n\n"
+        "⚶ 𝐑𝐞𝐰𝐚𝐫𝐝 𝐖𝐚𝐢𝐭𝐢𝐧𝐠 𝐅𝐨𝐫 𝐘𝐨𝐮 ⚶"
     )
 
     # Inline Buttons
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="JOIN 1", url="https://t.me/your_channel1"),
-         InlineKeyboardButton(text="JOIN 2", url="https://t.me/your_channel2")],
-        [InlineKeyboardButton(text="✅ Verify", callback_data="verify")]
+        [InlineKeyboardButton(text="➲ 𝐕𝐄𝐑𝐈𝐅𝐘 𝐍𝐎𝐖 ⟳♼", callback_data="verify")]
     ])
 
     await bot.send_photo(
