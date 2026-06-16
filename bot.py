@@ -44,10 +44,15 @@ class WithdrawState(StatesGroup):
 # --- Menus ---
 def main_menu():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🕹 Play"), KeyboardButton(text="👥 Refer")],
-        [KeyboardButton(text="🎁 Daily Bonus"), KeyboardButton(text="📢 Tasks")],
-        [KeyboardButton(text="⭐ Balance"), KeyboardButton(text="💳 Withdraw")]
+        [KeyboardButton(text="▢ Play"), KeyboardButton(text="▢ Reffer")],
+        [KeyboardButton(text="▢ Daily Bonus"), KeyboardButton(text="▢ Tasks")],
+        [KeyboardButton(text="⭐ Balance")]
     ], resize_keyboard=True)
+
+def balance_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Withdraw", callback_data="withdraw_action")]
+    ])
 
 # --- Functions ---
 async def check_join(user_id):
@@ -78,9 +83,9 @@ async def start(message: types.Message):
 @dp.callback_query(F.data == "verify")
 async def verify(call: CallbackQuery):
     if await check_join(call.from_user.id):
-        await call.message.answer("✅ Success! Bot Unlocked.", reply_markup=main_menu())
+        await call.message.answer("✅ Verification Successful!", reply_markup=main_menu())
     else:
-        await call.answer("❌ Join both channels first!", show_alert=True)
+        await call.answer("❌ Please join both channels first!", show_alert=True)
 
 @dp.message(F.text == "⭐ Balance")
 async def balance(message: types.Message):
@@ -93,40 +98,26 @@ async def balance(message: types.Message):
         f"📊 --- ACCOUNT SUMMARY ---\n\n"
         f"💰 Available Balance: ₹{user_bal}\n"
         f"🔒 Locked Balance: ₹{locked_bal}\n\n"
-        f"🏧 Total Asset: ₹{user_bal + locked_bal}"
+        f"🏧 Total Assets: ₹{user_bal + locked_bal}"
     )
-    await message.answer(text)
+    await message.answer(text, reply_markup=balance_menu())
 
-@dp.message(F.text == "🎁 Daily Bonus")
-async def bonus(message: types.Message):
-    now = int(time.time())
-    cursor.execute("SELECT bonus_time FROM users WHERE user_id=?", (message.from_user.id,))
-    data = cursor.fetchone()
-    if data and (now - data[0] < 86400):
-        await message.answer("⏳ Bonus already claimed. Try again in 24 hours.")
-    else:
-        reward = random.randint(1, 5)
-        cursor.execute("UPDATE users SET balance = balance + ?, bonus_time=? WHERE user_id=?", (reward, now, message.from_user.id))
-        conn.commit()
-        await message.answer(f"🎁 Daily Bonus Added: ₹{reward}")
-
-@dp.message(F.text == "💳 Withdraw")
-async def withdraw_start(message: types.Message, state: FSMContext):
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
+@dp.callback_query(F.data == "withdraw_action")
+async def withdraw_callback(call: CallbackQuery, state: FSMContext):
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (call.from_user.id,))
     res = cursor.fetchone()
-    bal = res[0] if res else 0
-    if bal < 10:
-        await message.answer("❌ Minimum withdrawal is ₹10.")
-        return
-    await state.set_state(WithdrawState.waiting_for_amount)
-    await message.answer("💸 Enter Withdraw Amount:")
+    if res and res[0] >= 10:
+        await state.set_state(WithdrawState.waiting_for_amount)
+        await call.message.answer("💸 Please enter the amount you want to withdraw:")
+    else:
+        await call.answer("❌ Minimum withdraw limit is ₹10", show_alert=True)
 
 @dp.message(WithdrawState.waiting_for_amount)
 async def get_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("❌ Enter numbers only")
+    if not message.text.isdigit(): return await message.answer("❌ Enter numbers only.")
     await state.update_data(amount=message.text)
     await state.set_state(WithdrawState.waiting_for_upi)
-    await message.answer("🏦 Send Your UPI ID:")
+    await message.answer("🏦 Send your UPI ID:")
 
 @dp.message(WithdrawState.waiting_for_upi)
 async def get_upi(message: types.Message, state: FSMContext):
