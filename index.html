@@ -1,47 +1,59 @@
 <!DOCTYPE html>
 <html lang="hi">
 <head>
-    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spin & Win</title>
+    <title>Earning Dashboard</title>
     <style>
-        body { 
-            margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; 
-            height: 100vh; background: #000; color: #fff; font-family: sans-serif; 
-        }
-        .wheel { 
-            width: 300px; height: 300px; border: 10px solid #f39c12; border-radius: 50%; 
-            display: flex; align-items: center; justify-content: center; 
-            background: conic-gradient(#e74c3c 0deg 60deg, #f1c40f 60deg 120deg, #2ecc71 120deg 180deg, 
-                                        #3498db 180deg 240deg, #9b59b6 240deg 300deg, #e67e22 300deg 360deg);
-            transition: transform 4s cubic-bezier(0.17, 0.67, 0.12, 0.99);
-            box-shadow: 0 0 20px rgba(255,255,255,0.2);
-        }
-        #result { margin-top: 30px; font-size: 26px; font-weight: bold; color: #f1c40f; }
-        button { 
-            margin-top: 40px; padding: 15px 50px; font-size: 22px; cursor: pointer; 
-            background: #f39c12; color: #000; border: none; border-radius: 30px; font-weight: bold;
-        }
+        body { font-family: sans-serif; background: #000; color: #fff; margin: 0; padding-bottom: 70px; }
+        .page { display: none; padding: 20px; text-align: center; }
+        .active { display: block; }
+        .card { background: #1a1a1a; padding: 20px; border-radius: 15px; margin: 15px 0; border: 1px solid #f39c12; }
+        .navbar { position: fixed; bottom: 0; width: 100%; height: 60px; background: #111; display: flex; justify-content: space-around; align-items: center; border-top: 1px solid #f39c12; }
+        .nav-btn { background: none; border: none; color: #fff; font-size: 12px; cursor: pointer; }
+        button { width: 100%; padding: 12px; margin: 5px 0; border-radius: 8px; border: none; background: #f39c12; font-weight: bold; }
+        .wheel { width: 220px; height: 220px; border: 10px solid #f39c12; border-radius: 50%; margin: 20px auto; background: conic-gradient(red, yellow, green, blue); transition: 4s; }
     </style>
 </head>
 <body>
-    <div class="wheel" id="wheel">SPIN</div>
-    <div id="result">Lucky Reward Paayein!</div>
-    <button onclick="spin()">SPIN NOW</button>
+
+    <div id="home" class="page active">
+        <h1>🏠 Dashboard</h1>
+        <div class="card"><h3>💰 Wallet: ₹500</h3></div>
+        <div class="card"><h3>🎁 Daily Bonus</h3><button onclick="alert('Ads Loading...')">Watch Ad & Claim</button></div>
+    </div>
+
+    <div id="spin" class="page">
+        <h1>🎡 Spin Wheel</h1>
+        <div class="wheel" id="wheel"></div>
+        <button onclick="spin()">SPIN NOW</button>
+    </div>
+
+    <div id="tasks" class="page">
+        <h1>📝 Daily Tasks</h1>
+        <a href="https://sponsor-link1.com"><button>Task 1: Sponsor</button></a>
+        <a href="https://sponsor-link2.com"><button>Task 2: Sponsor</button></a>
+    </div>
+
+    <div id="refer" class="page">
+        <h1>👥 Refer & Earn</h1>
+        <div class="card">Aapka Refer Link:<br><code>t.me/YourBot?start=YOUR_ID</code></div>
+    </div>
+
+    <div class="navbar">
+        <button class="nav-btn" onclick="showPage('home')">🏠<br>Home</button>
+        <button class="nav-btn" onclick="showPage('spin')">🎡<br>Spin</button>
+        <button class="nav-btn" onclick="showPage('tasks')">📝<br>Tasks</button>
+        <button class="nav-btn" onclick="showPage('refer')">👥<br>Refer</button>
+    </div>
 
     <script>
+        function showPage(id) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById(id).classList.add('active');
+        }
         function spin() {
             const wheel = document.getElementById('wheel');
-            const resultDiv = document.getElementById('result');
-            const rewards = ["₹10", "₹50", "100 ₹", "Try Again", "500 ₹", "Jackpot 🎉"];
-            
-            const randomRotation = Math.floor(Math.random() * 3600) + 360;
-            wheel.style.transform = `rotate(${randomRotation}deg)`;
-            
-            setTimeout(() => {
-                const choice = rewards[Math.floor(Math.random() * rewards.length)];
-                resultDiv.innerText = "🏆 Aapne jeeta: " + choice;
-            }, 4000);
+            wheel.style.transform = `rotate(${Math.floor(Math.random() * 3600) + 360}deg)`;
         }
     </script>
 </body>
