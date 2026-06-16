@@ -1,21 +1,47 @@
 <!DOCTYPE html>
-<html>
+<html lang="hi">
 <head>
-    <title>Spin Wheel</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spin & Win</title>
     <style>
-        body { text-align: center; font-family: sans-serif; background: #2c3e50; color: white; padding-top: 50px; }
-        #wheel { font-size: 30px; font-weight: bold; margin: 20px; }
+        body { 
+            margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; 
+            height: 100vh; background: #000; color: #fff; font-family: sans-serif; 
+        }
+        .wheel { 
+            width: 300px; height: 300px; border: 10px solid #f39c12; border-radius: 50%; 
+            display: flex; align-items: center; justify-content: center; 
+            background: conic-gradient(#e74c3c 0deg 60deg, #f1c40f 60deg 120deg, #2ecc71 120deg 180deg, 
+                                        #3498db 180deg 240deg, #9b59b6 240deg 300deg, #e67e22 300deg 360deg);
+            transition: transform 4s cubic-bezier(0.17, 0.67, 0.12, 0.99);
+            box-shadow: 0 0 20px rgba(255,255,255,0.2);
+        }
+        #result { margin-top: 30px; font-size: 26px; font-weight: bold; color: #f1c40f; }
+        button { 
+            margin-top: 40px; padding: 15px 50px; font-size: 22px; cursor: pointer; 
+            background: #f39c12; color: #000; border: none; border-radius: 30px; font-weight: bold;
+        }
     </style>
 </head>
 <body>
-    <h1>Spin The Wheel</h1>
-    <div id="wheel">Spin karo!</div>
-    <button onclick="spin()" style="padding: 15px 30px; font-size: 20px;">SPIN</button>
+    <div class="wheel" id="wheel">SPIN</div>
+    <div id="result">Lucky Reward Paayein!</div>
+    <button onclick="spin()">SPIN NOW</button>
+
     <script>
         function spin() {
-            const rewards = ["₹10", "₹50", "100 Coins", "Try Again", "500 Coins", "Jackpot 🎉"];
-            document.getElementById('wheel').innerText = rewards[Math.floor(Math.random() * rewards.length)];
+            const wheel = document.getElementById('wheel');
+            const resultDiv = document.getElementById('result');
+            const rewards = ["₹10", "₹50", "100 ₹", "Try Again", "500 ₹", "Jackpot 🎉"];
+            
+            const randomRotation = Math.floor(Math.random() * 3600) + 360;
+            wheel.style.transform = `rotate(${randomRotation}deg)`;
+            
+            setTimeout(() => {
+                const choice = rewards[Math.floor(Math.random() * rewards.length)];
+                resultDiv.innerText = "🏆 Aapne jeeta: " + choice;
+            }, 4000);
         }
     </script>
 </body>
