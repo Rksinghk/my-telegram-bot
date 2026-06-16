@@ -44,9 +44,9 @@ class WithdrawState(StatesGroup):
 # --- Menus ---
 def main_menu():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="▢ Play"), KeyboardButton(text="▢ Reffer")],
-        [KeyboardButton(text="▢ Daily Bonus"), KeyboardButton(text="▢ Tasks")],
-        [KeyboardButton(text="⭐ Balance")]
+        [KeyboardButton(text="➜ 𝗣𝗹𝗮𝘆"), KeyboardButton(text="➜ 𝗥𝗲𝗳𝗳𝗲𝗿")],
+        [KeyboardButton(text="➜ 𝗗𝗮𝗶𝗹𝘆 𝗕𝗼𝗻𝘂𝘀"), KeyboardButton(text="➜ 𝗧𝗮𝘀𝗸𝘀")],
+        [KeyboardButton(text="➲ 𝐁𝐚𝐥𝐚𝐧𝐜𝐞")]
     ], resize_keyboard=True)
 
 def balance_menu():
@@ -87,7 +87,7 @@ async def verify(call: CallbackQuery):
     else:
         await call.answer("❌ Please join both channels first!", show_alert=True)
 
-@dp.message(F.text == "⭐ Balance")
+@dp.message(F.text == "➲ 𝐁𝐚𝐥𝐚𝐧𝐜𝐞")
 async def balance(message: types.Message):
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
     res = cursor.fetchone()
@@ -114,7 +114,7 @@ async def withdraw_callback(call: CallbackQuery, state: FSMContext):
 
 @dp.message(WithdrawState.waiting_for_amount)
 async def get_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("❌ Enter numbers only.")
+    if not message.text.isdigit(): return await message.answer("❌ Enter numeric value only.")
     await state.update_data(amount=message.text)
     await state.set_state(WithdrawState.waiting_for_upi)
     await message.answer("🏦 Send your UPI ID:")
@@ -125,7 +125,7 @@ async def get_upi(message: types.Message, state: FSMContext):
     amount = int(data['amount'])
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, message.from_user.id))
     conn.commit()
-    await bot.send_message(ADMIN_ID, f"💸 New Request\nUser: {message.from_user.id}\nAmt: ₹{amount}\nUPI: {message.text}")
+    await bot.send_message(ADMIN_ID, f"💸 New Withdraw Request\nUser: {message.from_user.id}\nAmt: ₹{amount}\nUPI: {message.text}")
     await message.answer("✅ Request submitted to admin!")
     await state.clear()
 
