@@ -1,18 +1,12 @@
 import os
 import sqlite3
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-
-# Config - Apni link yahan confirm kar lein
+# Config
 API_TOKEN = os.getenv("API_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6897212040"))
 WEB_APP_URL = "https://rksinghk.github.io/my-telegram-bot/" 
@@ -23,94 +17,44 @@ dp = Dispatcher(storage=MemoryStorage())
 # Database Setup
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)")
+cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0, refer_by INTEGER)")
 conn.commit()
 
-CHANNELS = ["@Moneyearning_updates", "@bexamoneygroup"]
-
-# FSM States
-class WithdrawState(StatesGroup):
-    waiting_for_amount = State()
-    waiting_for_upi = State()
-
-# --- Menus ---
-def main_menu():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="➜ 𝗣𝗹𝗮𝘆"), KeyboardButton(text="➜ 𝗥𝗲𝗳𝗳𝗲𝗿")],
-        [KeyboardButton(text="➜ 𝗗𝗮𝗶𝗹𝘆 𝗕𝗼𝗻𝘂𝘀"), KeyboardButton(text="➜ 𝗧𝗮𝘀𝗸𝘀")],
-        [KeyboardButton(text="➲ 𝐁𝐚𝐥𝐚𝐧𝐜𝐞")]
-    ], resize_keyboard=True)
-
-def balance_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Withdraw", callback_data="withdraw_action")]
-    ])
-
-# --- Functions ---
-async def check_join(user_id):
-    for channel in CHANNELS:
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ['left', 'kicked']: return False
-        except: return False
-    return True
-
 # --- Handlers ---
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    args = message.text.split()
+    
+    # Referral System
+    if len(args) > 1:
+        ref_id = args[1]
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, refer_by) VALUES (?, ?)", (user_id, ref_id))
+    else:
+        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
     conn.commit()
-    await message.answer("✅ Welcome! Bot is active.", reply_markup=main_menu())
 
-@dp.message(F.text == "➜ 𝗣𝗹𝗮𝘆")
-async def play_game(message: types.Message):
+    # Dashboard Button
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎡 Spin The Wheel", web_app=WebAppInfo(url=WEB_APP_URL))]
+        [InlineKeyboardButton(text="🚀 Open Dashboard", web_app=WebAppInfo(url=WEB_APP_URL))]
     ])
-    await message.answer("🕹 Game Zone: Spin wheel ghumao aur reward pao!", reply_markup=keyboard)
+    await message.answer("✅ Welcome to Earning Bot!\nDashboard kholne ke liye niche button dabayein.", reply_markup=keyboard)
 
-@dp.message(F.text == "➲ 𝐁𝐚𝐥𝐚𝐧𝐜𝐞")
-async def balance(message: types.Message):
+@dp.message(Command("withdraw"))
+async def withdraw_cmd(message: types.Message):
+    # Withdraw Logic
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
     res = cursor.fetchone()
-    user_bal = res[0] if res else 0
-    locked_bal = 500
-    text = (f"📊 --- ACCOUNT SUMMARY ---\n\n"
-            f"💰 Available: ₹{user_bal}\n"
-            f"🔒 Locked: ₹{locked_bal}\n\n"
-            f"🏧 Total Assets: ₹{user_bal + locked_bal}")
-    await message.answer(text, reply_markup=balance_menu())
-
-@dp.callback_query(F.data == "withdraw_action")
-async def withdraw_callback(call: types.CallbackQuery, state: FSMContext):
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (call.from_user.id,))
-    res = cursor.fetchone()
     if res and res[0] >= 10:
-        await state.set_state(WithdrawState.waiting_for_amount)
-        await call.message.answer("💸 Please enter the amount to withdraw:")
+        await message.answer("🏦 Withdraw request admin ko bhej di gayi hai!")
+        await bot.send_message(ADMIN_ID, f"💸 New Withdrawal Request from {message.from_user.id}")
     else:
-        await call.answer("❌ Minimum withdraw ₹10", show_alert=True)
-
-@dp.message(WithdrawState.waiting_for_amount)
-async def get_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("❌ Enter numbers only.")
-    await state.update_data(amount=message.text)
-    await state.set_state(WithdrawState.waiting_for_upi)
-    await message.answer("🏦 Send your UPI ID:")
-
-@dp.message(WithdrawState.waiting_for_upi)
-async def get_upi(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    amount = int(data['amount'])
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, message.from_user.id))
-    conn.commit()
-    await bot.send_message(ADMIN_ID, f"💸 New Request\nUser: {message.from_user.id}\nAmt: ₹{amount}\nUPI: {message.text}")
-    await message.answer("✅ Request submitted to admin!")
-    await state.clear()
+        await message.answer("❌ Minimum ₹10 balance hona chahiye!")
 
 async def main():
+    print("Bot is running...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main())                       
