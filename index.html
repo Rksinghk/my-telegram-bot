@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spin Wheel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { text-align: center; font-family: sans-serif; background: #2c3e50; color: white; padding-top: 50px; }
+        #wheel { font-size: 30px; font-weight: bold; margin: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Spin The Wheel</h1>
+    <div id="wheel">Spin karo!</div>
+    <button onclick="spin()" style="padding: 15px 30px; font-size: 20px;">SPIN</button>
+    <script>
+        function spin() {
+            const rewards = ["₹10", "₹50", "100 Coins", "Try Again", "500 Coins", "Jackpot 🎉"];
+            document.getElementById('wheel').innerText = rewards[Math.floor(Math.random() * rewards.length)];
+        }
+    </script>
+</body>
+</html>
