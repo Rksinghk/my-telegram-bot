@@ -11,39 +11,33 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Logging Setup
+# Logging
 logging.basicConfig(level=logging.INFO)
 
-# Config - Variables (Railway/Render ke settings mein add karein)
+# Config
 API_TOKEN = os.getenv("API_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6897212040"))
-
-# Photo URL
 PHOTO_URL = "https://i.postimg.cc/02GRzWDB/file-00000000d74071fa86d1d103d4ac7342.png"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Database Setup
+# Database
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     balance INTEGER DEFAULT 0,
-    referred_by INTEGER,
-    bonus_time INTEGER DEFAULT 0,
-    upi TEXT
+    bonus_time INTEGER DEFAULT 0
 )
 """)
 conn.commit()
 
-# Channels List
-# Channel 1 username
-# Channel 2 (use the link provided)
-CHANNELS = ["@Moneyearning_updates", "https://t.me/+L4ubY08PrhtmZDI9"]
+# Channels (Bot must be admin in these)
+CHANNELS = ["@Moneyearning_updates", "@bexamoneygroup"]
 
-# FSM States
+# FSM
 class WithdrawState(StatesGroup):
     waiting_for_amount = State()
     waiting_for_upi = State()
@@ -57,14 +51,13 @@ def main_menu():
     ], resize_keyboard=True)
 
 async def check_join(user_id):
-    # Dono channels ke liye check logic
-    # Note: Private channels ke liye bot ka admin hona zaroori hai
     for channel in CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ["left", "kicked"]: return False
-        except:
-            # Agar bot us channel mein nahi hai, toh exception aayega
+            if member.status in ['left', 'kicked']:
+                return False
+        except Exception as e:
+            logging.error(f"Error checking {channel}: {e}")
             return False
     return True
 
@@ -79,7 +72,7 @@ async def start(message: types.Message):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟭", url="https://t.me/Moneyearning_updates"),
-                InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟮", url="https://t.me/+L4ubY08PrhtmZDI9")
+                InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟮", url="https://t.me/bexamoneygroup")
             ],
             [InlineKeyboardButton(text="➲ 𝐕𝐄𝐑𝐈𝐅𝐘", callback_data="verify")]
         ])
@@ -90,7 +83,6 @@ async def start(message: types.Message):
             "📢 JOIN BOTH CHANNELS\n\n"
             "🔓 UNLOCK BOT AFTER VERIFY"
         )
-        
         await message.answer_photo(photo=PHOTO_URL, caption=caption, reply_markup=keyboard)
     else:
         await message.answer("✅ Welcome Back!", reply_markup=main_menu())
@@ -102,7 +94,6 @@ async def verify(call: CallbackQuery):
     else:
         await call.answer("❌ Please join both channels first!", show_alert=True)
 
-# --- Other Handlers (Balance, Bonus, Withdraw) ---
 @dp.message(F.text == "💰 Balance")
 async def balance(message: types.Message):
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
@@ -137,7 +128,7 @@ async def get_amount(message: types.Message, state: FSMContext):
     if not message.text.isdigit(): return await message.answer("❌ Enter numbers only")
     await state.update_data(amount=message.text)
     await state.set_state(WithdrawState.waiting_for_upi)
-    await message.answer("🏦 Send Your UPI ID\n\nExample:\nabc@paytm")
+    await message.answer("🏦 Send Your UPI ID")
 
 @dp.message(WithdrawState.waiting_for_upi)
 async def get_upi(message: types.Message, state: FSMContext):
@@ -145,7 +136,7 @@ async def get_upi(message: types.Message, state: FSMContext):
     amount = int(data['amount'])
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, message.from_user.id))
     conn.commit()
-    await bot.send_message(ADMIN_ID, f"💸 New Withdraw Request\n👤 User ID: {message.from_user.id}\n💰 Amount: ₹{amount}\n🏦 UPI: {message.text}")
+    await bot.send_message(ADMIN_ID, f"💸 New Withdraw Request\n👤 User: {message.from_user.id}\n💰 Amount: ₹{amount}\n🏦 UPI: {message.text}")
     await message.answer("✅ Withdraw Request Sent")
     await state.clear()
 
