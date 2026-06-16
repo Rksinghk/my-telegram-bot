@@ -93,21 +93,9 @@ async def balance(message: types.Message):
         f"📊 --- ACCOUNT SUMMARY ---\n\n"
         f"💰 Available Balance: ₹{user_bal}\n"
         f"🔒 Locked Balance: ₹{locked_bal}\n\n"
-        f"🏧 Withdraw available from: ₹{user_bal + locked_bal}"
+        f"🏧 Total Asset: ₹{user_bal + locked_bal}"
     )
     await message.answer(text)
-
-@dp.message(F.text == "💳 Withdraw")
-async def withdraw_start(message: types.Message, state: FSMContext):
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
-    bal = cursor.fetchone()[0]
-    if bal < 10:
-        await message.answer("❌ Minimum Withdraw ₹10 is required.")
-        return
-    await state.set_state(WithdrawState.waiting_for_amount)
-    await message.answer("💸 Enter Withdraw Amount:")
-
-# (Baki logic waisa hi rahega jaisa purane code mein tha)
 
 @dp.message(F.text == "🎁 Daily Bonus")
 async def bonus(message: types.Message):
@@ -115,12 +103,43 @@ async def bonus(message: types.Message):
     cursor.execute("SELECT bonus_time FROM users WHERE user_id=?", (message.from_user.id,))
     data = cursor.fetchone()
     if data and (now - data[0] < 86400):
-        await message.answer("⏳ Try again in 24 hours.")
+        await message.answer("⏳ Bonus already claimed. Try again in 24 hours.")
     else:
         reward = random.randint(1, 5)
         cursor.execute("UPDATE users SET balance = balance + ?, bonus_time=? WHERE user_id=?", (reward, now, message.from_user.id))
         conn.commit()
-        await message.answer(f"🎁 Bonus Added: ₹{reward}")
+        await message.answer(f"🎁 Daily Bonus Added: ₹{reward}")
+
+@dp.message(F.text == "💳 Withdraw")
+async def withdraw_start(message: types.Message, state: FSMContext):
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
+    res = cursor.fetchone()
+    bal = res[0] if res else 0
+    if bal < 10:
+        await message.answer("❌ Minimum withdrawal is ₹10.")
+        return
+    await state.set_state(WithdrawState.waiting_for_amount)
+    await message.answer("💸 Enter Withdraw Amount:")
+
+@dp.message(WithdrawState.waiting_for_amount)
+async def get_amount(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("❌ Enter numbers only")
+    await state.update_data(amount=message.text)
+    await state.set_state(WithdrawState.waiting_for_upi)
+    await message.answer("🏦 Send Your UPI ID:")
+
+@dp.message(WithdrawState.waiting_for_upi)
+async def get_upi(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    amount = int(data['amount'])
+    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, message.from_user.id))
+    conn.commit()
+    await bot.send_message(ADMIN_ID, f"💸 New Request\nUser: {message.from_user.id}\nAmt: ₹{amount}\nUPI: {message.text}")
+    await message.answer("✅ Request submitted to admin!")
+    await state.clear()
+
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
