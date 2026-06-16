@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS users (
 conn.commit()
 
 # Channels List
-CHANNELS = ["@Moneyearning_updates", "@earn_dailyrewards"]
+# Channel 1 username
+# Channel 2 (use the link provided)
+CHANNELS = ["@Moneyearning_updates", "https://t.me/+L4ubY08PrhtmZDI9"]
 
 # FSM States
 class WithdrawState(StatesGroup):
@@ -55,11 +57,15 @@ def main_menu():
     ], resize_keyboard=True)
 
 async def check_join(user_id):
+    # Dono channels ke liye check logic
+    # Note: Private channels ke liye bot ka admin hona zaroori hai
     for channel in CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status in ["left", "kicked"]: return False
-        except: return False
+        except:
+            # Agar bot us channel mein nahi hai, toh exception aayega
+            return False
     return True
 
 # --- Handlers ---
@@ -73,7 +79,7 @@ async def start(message: types.Message):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟭", url="https://t.me/Moneyearning_updates"),
-                InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟮", url="https://t.me/earn_dailyrewards")
+                InlineKeyboardButton(text="➜ 𝗝𝗼𝗶𝗻 𝟮", url="https://t.me/+L4ubY08PrhtmZDI9")
             ],
             [InlineKeyboardButton(text="➲ 𝐕𝐄𝐑𝐈𝐅𝐘", callback_data="verify")]
         ])
@@ -94,8 +100,9 @@ async def verify(call: CallbackQuery):
     if await check_join(call.from_user.id):
         await call.message.answer("✅ Verification Successful!\n\n🎉 Bot Unlocked.", reply_markup=main_menu())
     else:
-        await call.answer("❌ Join both channels first", show_alert=True)
+        await call.answer("❌ Please join both channels first!", show_alert=True)
 
+# --- Other Handlers (Balance, Bonus, Withdraw) ---
 @dp.message(F.text == "💰 Balance")
 async def balance(message: types.Message):
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
@@ -146,4 +153,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())                                                  
+    asyncio.run(main())
