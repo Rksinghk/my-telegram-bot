@@ -1,17 +1,16 @@
-# =============================================================================
-# TELEGRAM EARNING BOT — Bot.py
-# Framework : Aiogram 3.20
-# Database  : SQLite (aiosqlite)
-# Deploy    : Railway + GitHub (single-file)
-# =============================================================================
+"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TELEGRAM EARNING BOT
+Built with Aiogram 3.20 | SQLite | Railway Ready
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
 
 import asyncio
 import logging
 import os
 import sqlite3
-import time
 from datetime import datetime, date
-from typing import Optional
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -21,96 +20,100 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    BufferedInputFile,
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    Message,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto, Message, URLInputFile
 )
-from dotenv import load_dotenv
 
-# ─── Load environment ────────────────────────────────────────────────────────
+# ─── Load Env ───────────────────────────────────────────────────────────────
 load_dotenv()
-API_TOKEN    = os.getenv("API_TOKEN", "")
-ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
-BOT_USERNAME = os.getenv("BOT_USERNAME", "myearningbot")
+
+API_TOKEN    = os.getenv("API_TOKEN", "YOUR_BOT_TOKEN")
+ADMIN_ID     = int(os.getenv("ADMIN_ID", "123456789"))
+BOT_USERNAME = os.getenv("BOT_USERNAME", "YourBot")
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# ─── Bot / Dispatcher ─────────────────────────────────────────────────────────
+# ─── Bot & Dispatcher ────────────────────────────────────────────────────────
 bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp  = Dispatcher(storage=MemoryStorage())
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# =============================================================================
-# DATABASE LAYER
-# =============================================================================
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATABASE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-DB_FILE = "earning_bot.db"
-
+DB_PATH = "earning_bot.db"
 
 def get_db():
-    """Return a synchronous SQLite connection (used only at startup for schema)."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
-    """Create all tables and seed default settings if they don't exist."""
     conn = get_db()
     c = conn.cursor()
 
-    # ── Users ──────────────────────────────────────────────────────────────
+    # Users table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id      INTEGER PRIMARY KEY,
-            username     TEXT,
-            full_name    TEXT,
-            referred_by  INTEGER DEFAULT 0,
-            coins        INTEGER DEFAULT 0,
+            user_id     INTEGER PRIMARY KEY,
+            username    TEXT,
+            full_name   TEXT,
+            coins       INTEGER DEFAULT 0,
             locked_coins INTEGER DEFAULT 0,
-            joined_at    TEXT DEFAULT CURRENT_TIMESTAMP,
-            is_banned    INTEGER DEFAULT 0,
-            last_active  TEXT DEFAULT CURRENT_TIMESTAMP
+            referrer_id INTEGER DEFAULT NULL,
+            joined_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_active TEXT DEFAULT CURRENT_TIMESTAMP,
+            is_banned   INTEGER DEFAULT 0,
+            is_verified INTEGER DEFAULT 0
         )
     """)
 
-    # ── Daily reward tracker ───────────────────────────────────────────────
+    # Task claims (once per day per task)
     c.execute("""
-        CREATE TABLE IF NOT EXISTS daily_rewards (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id   INTEGER,
-            action    TEXT,
-            reward_date TEXT,
-            UNIQUE(user_id, action, reward_date)
+        CREATE TABLE IF NOT EXISTS task_claims (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER,
+            task_id     TEXT,
+            claimed_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            coins_earned INTEGER
         )
     """)
 
-    # ── Withdrawals ────────────────────────────────────────────────────────
+    # Task opened tracking (must open before claim)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS task_opened (
+            user_id  INTEGER,
+            task_id  TEXT,
+            opened_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, task_id)
+        )
+    """)
+
+    # Withdraw requests
     c.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id      INTEGER,
-            coins        INTEGER,
-            method       TEXT,       -- 'upi' or 'qr'
-            detail       TEXT,       -- UPI ID or file_id of QR screenshot
-            status       TEXT DEFAULT 'pending',
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER,
+            coins       INTEGER,
+            amount      REAL,
+            method      TEXT,
+            upi_id      TEXT,
+            qr_file_id  TEXT,
+            status      TEXT DEFAULT 'pending',
             requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
             processed_at TEXT
         )
     """)
 
-    # ── Settings (key-value) ───────────────────────────────────────────────
+    # Settings table (key-value)
     c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
@@ -118,1522 +121,1339 @@ def init_db():
         )
     """)
 
-    # ── Activity log ──────────────────────────────────────────────────────
+    # Logs
     c.execute("""
         CREATE TABLE IF NOT EXISTS logs (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER,
             action     TEXT,
-            detail     TEXT,
+            details    TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     conn.commit()
 
-    # ── Seed default settings ──────────────────────────────────────────────
+    # ── Seed default settings ──
     defaults = {
-        # welcome
-        "welcome_caption": (
-            "✦ Welcome To {name} ✦\n\n"
-            "❖ Complete Simple Task\n"
-            "❖ Earn ₹250 Rewards\n"
-            "❖ Join 2 Official Channels\n"
-            "❖ Unlock Bot Access\n"
-            "❖ Tap Verify After Joining\n\n"
-            "Share your link & earn rewards on every purchase your friends make"
-        ),
-        "start_image": "",          # file_id (after first send) or empty
-        "start_image_url": "https://i.postimg.cc/02GRzWDB/file-00000000d74071fa86d1d103d4ac7342.png",
-        # force-join channels  (format: @channelusername|https://t.me/...)
-        "channel_1": "@Moneyearning_updates|https://t.me/Moneyearning_updates",
-        "channel_2": "@bexamoneygroup|https://t.me/bexamoneygroup",
-        # coins
-        "referral_bonus":    "50",
-        "coins_per_rupee":   "40",    # 1000 coins = ₹25 → 40 coins/₹
-        "min_withdraw_coins":"1000",
-        # ─── Task rewards ──────────────────────────────────────────────
-        "reward_watch_ads":        "20",
-        "reward_join_tg":          "25",
-        "reward_follow_social":    "20",
-        "reward_subscribe_yt":     "30",
-        "reward_rate_app":         "50",
-        # ─── Survey rewards ────────────────────────────────────────────
-        "reward_survey_1": "20",
-        "reward_survey_2": "25",
-        "reward_survey_3": "20",
-        "reward_survey_4": "30",
-        "reward_survey_5": "50",
-        # ─── Bexacart rewards ──────────────────────────────────────────
-        "reward_bexacart_1": "20",
-        "reward_bexacart_2": "25",
-        "reward_bexacart_3": "20",
-        "reward_bexacart_4": "30",
-        "reward_bexacart_5": "50",
-        # ─── Rewards section rewards ───────────────────────────────────
-        "reward_vouchers":       "20",
-        "reward_double_points":  "25",
-        "reward_claim":          "20",
-        "reward_unlock":         "30",
-        "reward_view":           "50",
-        # ─── Links (Task) ──────────────────────────────────────────────
-        "link_watch_ads":      "https://example.com/ads",
-        "link_join_tg":        "https://t.me/joinchat/example",
-        "link_follow_social":  "https://instagram.com/example",
-        "link_subscribe_yt":   "https://youtube.com/example",
-        "link_rate_app":       "https://play.google.com/store/apps/example",
-        # ─── Links (Survey) ────────────────────────────────────────────
-        "link_survey_1": "https://example.com/survey1",
-        "link_survey_2": "https://example.com/survey2",
-        "link_survey_3": "https://example.com/survey3",
-        "link_survey_4": "https://example.com/survey4",
-        "link_survey_5": "https://example.com/survey5",
-        # ─── Links (Bexacart) ──────────────────────────────────────────
-        "link_bexacart_1": "https://bexacart.com/cloths",
-        "link_bexacart_2": "https://bexacart.com/mobiles",
-        "link_bexacart_3": "https://bexacart.com/accessories",
-        "link_bexacart_4": "https://bexacart.com/beauty",
-        "link_bexacart_5": "https://bexacart.com/others",
-        # ─── Links (Rewards section) ───────────────────────────────────
-        "link_vouchers":      "https://example.com/vouchers",
-        "link_double_points": "https://example.com/double",
-        "link_claim":         "https://example.com/claim",
-        "link_unlock":        "https://example.com/unlock",
-        "link_view_rewards":  "https://example.com/view",
+        "welcome_message":  "✦ Welcome To {name} ✦\n\n❖ Complete Simple Task\n❖ Earn ₹250 Rewards\n❖ Join 2 Official Channels\n❖ Unlock Bot Access\n❖ Tap Verify After Joining\n\nShare your link & earn rewards on every purchase your friends make",
+        "start_image":      "https://i.postimg.cc/02GRzWDB/file-00000000d74071fa86d1d103d4ac7342.png",
+        "channel_1":        "https://t.me/Moneyearning_updates",
+        "channel_1_id":     "@Moneyearning_updates",
+        "channel_2":        "https://t.me/bexamoneygroup",
+        "channel_2_id":     "@bexamoneygroup",
+        "referral_bonus":   "100",
+        "min_withdraw":     "500",
+        # Task rewards (coins)
+        "reward_watch_ads":      "20",
+        "reward_join_tg":        "25",
+        "reward_follow_insta":   "20",
+        "reward_subscribe_yt":   "30",
+        "reward_rate_app":       "50",
+        "reward_survey_1":       "20",
+        "reward_survey_2":       "25",
+        "reward_survey_3":       "20",
+        "reward_survey_4":       "30",
+        "reward_survey_5":       "50",
+        "reward_bexacart_1":     "20",
+        "reward_bexacart_2":     "25",
+        "reward_bexacart_3":     "20",
+        "reward_bexacart_4":     "30",
+        "reward_bexacart_5":     "50",
+        "reward_rewards_1":      "20",
+        "reward_rewards_2":      "25",
+        "reward_rewards_3":      "20",
+        "reward_rewards_4":      "30",
+        "reward_rewards_5":      "50",
+        # Task URLs (20 total)
+        "url_watch_ads":         "https://example.com/ads",
+        "url_join_tg":           "https://t.me/Moneyearning_updates",
+        "url_follow_insta":      "https://instagram.com/",
+        "url_subscribe_yt":      "https://youtube.com/",
+        "url_rate_app":          "https://example.com/rate",
+        "url_survey_1":          "https://example.com/survey1",
+        "url_survey_2":          "https://example.com/survey2",
+        "url_survey_3":          "https://example.com/survey3",
+        "url_survey_4":          "https://example.com/survey4",
+        "url_survey_5":          "https://example.com/survey5",
+        "url_bexacart_1":        "https://bexacart.com/cloths",
+        "url_bexacart_2":        "https://bexacart.com/mobiles",
+        "url_bexacart_3":        "https://bexacart.com/accessories",
+        "url_bexacart_4":        "https://bexacart.com/beauty",
+        "url_bexacart_5":        "https://bexacart.com/others",
+        "url_rewards_1":         "https://example.com/vouchers",
+        "url_rewards_2":         "https://example.com/double",
+        "url_rewards_3":         "https://example.com/claim",
+        "url_rewards_4":         "https://example.com/unlock",
+        "url_rewards_5":         "https://example.com/view",
+        # Feature toggles
+        "tasks_enabled":         "1",
     }
-
-    for key, value in defaults.items():
-        c.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-            (key, value),
-        )
+    for k, v in defaults.items():
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
 
     conn.commit()
     conn.close()
-    logger.info("Database initialised.")
+    logger.info("Database initialized.")
 
-
-# ─── Sync helpers (called in async context via run_in_executor) ───────────────
-
-def _get_setting(key: str) -> str:
+def get_setting(key: str, default=None):
     conn = get_db()
     row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     conn.close()
-    return row["value"] if row else ""
+    return row["value"] if row else default
 
+def set_setting(key: str, value: str):
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
+    conn.close()
 
-def _set_setting(key: str, value: str):
+def add_log(user_id, action, details=""):
+    conn = get_db()
+    conn.execute("INSERT INTO logs (user_id, action, details) VALUES (?, ?, ?)",
+                 (user_id, action, details))
+    conn.commit()
+    conn.close()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# USER HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def get_user(user_id: int):
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return user
+
+def ensure_user(user_id: int, username: str, full_name: str, referrer_id: int = None):
+    conn = get_db()
+    existing = conn.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO users (user_id, username, full_name, referrer_id) VALUES (?, ?, ?, ?)",
+            (user_id, username or "", full_name or "User", referrer_id)
+        )
+        conn.commit()
+        is_new = True
+    else:
+        conn.execute(
+            "UPDATE users SET username=?, full_name=?, last_active=CURRENT_TIMESTAMP WHERE user_id=?",
+            (username or "", full_name or "User", user_id)
+        )
+        conn.commit()
+        is_new = False
+    conn.close()
+    return is_new
+
+def add_coins(user_id: int, coins: int):
+    conn = get_db()
+    conn.execute("UPDATE users SET coins = coins + ? WHERE user_id=?", (coins, user_id))
+    conn.commit()
+    conn.close()
+
+def remove_coins(user_id: int, coins: int):
+    conn = get_db()
+    conn.execute("UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id=?", (coins, user_id))
+    conn.commit()
+    conn.close()
+
+def coins_to_rupees(coins: int) -> float:
+    return round(coins / 40, 2)
+
+def rupees_to_coins(rupees: float) -> int:
+    return int(rupees * 40)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FSM STATES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class WithdrawStates(StatesGroup):
+    choose_method = State()
+    enter_upi     = State()
+    upload_qr     = State()
+
+class AdminStates(StatesGroup):
+    broadcast          = State()
+    ban_user           = State()
+    unban_user         = State()
+    add_coins          = State()
+    remove_coins       = State()
+    edit_welcome       = State()
+    edit_start_image   = State()
+    edit_channel_1     = State()
+    edit_channel_2     = State()
+    edit_referral_bonus = State()
+    edit_min_withdraw  = State()
+    edit_coin_reward   = State()  # stores which reward to edit in data
+    edit_task_url      = State()  # stores which url to edit in data
+    add_coins_amount   = State()
+    remove_coins_amount = State()
+    waiting_user_id    = State()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# KEYBOARDS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def kb_start():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➜ Share Link", callback_data="share_link")],
+        [
+            InlineKeyboardButton(text="➜ Join 1", url=get_setting("channel_1")),
+            InlineKeyboardButton(text="➜ Join 2", url=get_setting("channel_2")),
+        ],
+        [InlineKeyboardButton(text="➲ VERIFY", callback_data="verify")],
+    ])
+
+def kb_main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➜ Task",   callback_data="menu_task"),
+            InlineKeyboardButton(text="➜ Survey", callback_data="menu_survey"),
+        ],
+        [
+            InlineKeyboardButton(text="➜ Bexacart (Top Deals)", callback_data="menu_bexacart"),
+            InlineKeyboardButton(text="➜ Rewards", callback_data="menu_rewards"),
+        ],
+        [InlineKeyboardButton(text="➲ Balance", callback_data="menu_balance")],
+    ])
+
+def kb_task_page():
+    r = lambda k: get_setting(k, "0")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Watch Ads +{r('reward_watch_ads')} Coins",       callback_data="task_watch_ads")],
+        [InlineKeyboardButton(text=f"Join TG Channel +{r('reward_join_tg')} Coins",   callback_data="task_join_tg")],
+        [InlineKeyboardButton(text=f"Follow Insta/Facebook +{r('reward_follow_insta')} Coins", callback_data="task_follow_insta")],
+        [InlineKeyboardButton(text=f"Subscribe YouTube +{r('reward_subscribe_yt')} Coins",    callback_data="task_subscribe_yt")],
+        [InlineKeyboardButton(text=f"Rate Our App +{r('reward_rate_app')} Coins",     callback_data="task_rate_app")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_survey_page():
+    r = lambda k: get_setting(k, "0")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"1 Survey +{r('reward_survey_1')} Coins",  callback_data="task_survey_1")],
+        [InlineKeyboardButton(text=f"2 Survey +{r('reward_survey_2')} Coins",  callback_data="task_survey_2")],
+        [InlineKeyboardButton(text=f"3 Survey +{r('reward_survey_3')} Coins",  callback_data="task_survey_3")],
+        [InlineKeyboardButton(text=f"4 Survey +{r('reward_survey_4')} Coins",  callback_data="task_survey_4")],
+        [InlineKeyboardButton(text=f"5 Survey +{r('reward_survey_5')} Coins",  callback_data="task_survey_5")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_bexacart_page():
+    r = lambda k: get_setting(k, "0")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"1 Cloths +{r('reward_bexacart_1')} Coins",       callback_data="task_bexacart_1")],
+        [InlineKeyboardButton(text=f"2 Mobiles +{r('reward_bexacart_2')} Coins",      callback_data="task_bexacart_2")],
+        [InlineKeyboardButton(text=f"3 Accessories +{r('reward_bexacart_3')} Coins",  callback_data="task_bexacart_3")],
+        [InlineKeyboardButton(text=f"4 Beauty +{r('reward_bexacart_4')} Coins",       callback_data="task_bexacart_4")],
+        [InlineKeyboardButton(text=f"5 Others +{r('reward_bexacart_5')} Coins",       callback_data="task_bexacart_5")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_rewards_page():
+    r = lambda k: get_setting(k, "0")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"1 My Vouchers +{r('reward_rewards_1')} Coins",         callback_data="task_rewards_1")],
+        [InlineKeyboardButton(text=f"2 Activate Double Points +{r('reward_rewards_2')} Coins", callback_data="task_rewards_2")],
+        [InlineKeyboardButton(text=f"3 Claim Reward +{r('reward_rewards_3')} Coins",        callback_data="task_rewards_3")],
+        [InlineKeyboardButton(text=f"4 Unlock Reward +{r('reward_rewards_4')} Coins",       callback_data="task_rewards_4")],
+        [InlineKeyboardButton(text=f"5 View Rewards +{r('reward_rewards_5')} Coins",        callback_data="task_rewards_5")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_task_action(task_id: str, url: str, coins: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Open Task", url=url, callback_data=f"open_{task_id}")],
+        [InlineKeyboardButton(text=f"✅ Claim {coins} Coins", callback_data=f"claim_{task_id}")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_balance_page():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Withdraw", callback_data="withdraw")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+def kb_withdraw_method():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 UPI ID",        callback_data="withdraw_upi")],
+        [InlineKeyboardButton(text="📷 QR Screenshot", callback_data="withdraw_qr")],
+        [InlineKeyboardButton(text="🔙 Cancel",        callback_data="back_main")],
+    ])
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CHANNEL MEMBERSHIP CHECK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def check_membership(user_id: int) -> bool:
+    ch1 = get_setting("channel_1_id", "@Moneyearning_updates")
+    ch2 = get_setting("channel_2_id", "@bexamoneygroup")
+    try:
+        m1 = await bot.get_chat_member(ch1, user_id)
+        m2 = await bot.get_chat_member(ch2, user_id)
+        valid = ("member", "administrator", "creator")
+        return m1.status in valid and m2.status in valid
+    except Exception as e:
+        logger.warning(f"Membership check failed: {e}")
+        return False
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TASK HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Mapping task_id → (reward_key, url_key, label)
+TASK_META = {
+    "watch_ads":    ("reward_watch_ads",    "url_watch_ads",    "Watch Ads",           "https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png"),
+    "join_tg":      ("reward_join_tg",      "url_join_tg",      "Join TG Channel",     "https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png"),
+    "follow_insta": ("reward_follow_insta", "url_follow_insta", "Follow Insta/Facebook","https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png"),
+    "subscribe_yt": ("reward_subscribe_yt", "url_subscribe_yt", "Subscribe YouTube",   "https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png"),
+    "rate_app":     ("reward_rate_app",     "url_rate_app",     "Rate Our App",        "https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png"),
+    "survey_1":     ("reward_survey_1",     "url_survey_1",     "Survey 1",            "https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png"),
+    "survey_2":     ("reward_survey_2",     "url_survey_2",     "Survey 2",            "https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png"),
+    "survey_3":     ("reward_survey_3",     "url_survey_3",     "Survey 3",            "https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png"),
+    "survey_4":     ("reward_survey_4",     "url_survey_4",     "Survey 4",            "https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png"),
+    "survey_5":     ("reward_survey_5",     "url_survey_5",     "Survey 5",            "https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png"),
+    "bexacart_1":   ("reward_bexacart_1",   "url_bexacart_1",   "Cloths",              "https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png"),
+    "bexacart_2":   ("reward_bexacart_2",   "url_bexacart_2",   "Mobiles",             "https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png"),
+    "bexacart_3":   ("reward_bexacart_3",   "url_bexacart_3",   "Accessories",         "https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png"),
+    "bexacart_4":   ("reward_bexacart_4",   "url_bexacart_4",   "Beauty",              "https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png"),
+    "bexacart_5":   ("reward_bexacart_5",   "url_bexacart_5",   "Others",              "https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png"),
+    "rewards_1":    ("reward_rewards_1",    "url_rewards_1",    "My Vouchers",         "https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png"),
+    "rewards_2":    ("reward_rewards_2",    "url_rewards_2",    "Activate Double Points","https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png"),
+    "rewards_3":    ("reward_rewards_3",    "url_rewards_3",    "Claim Reward",        "https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png"),
+    "rewards_4":    ("reward_rewards_4",    "url_rewards_4",    "Unlock Reward",       "https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png"),
+    "rewards_5":    ("reward_rewards_5",    "url_rewards_5",    "View Rewards",        "https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png"),
+}
+
+def has_opened_task(user_id: int, task_id: str) -> bool:
+    conn = get_db()
+    row = conn.execute(
+        "SELECT 1 FROM task_opened WHERE user_id=? AND task_id=?",
+        (user_id, task_id)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+def mark_task_opened(user_id: int, task_id: str):
     conn = get_db()
     conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
+        "INSERT OR REPLACE INTO task_opened (user_id, task_id, opened_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+        (user_id, task_id)
     )
     conn.commit()
     conn.close()
 
-
-def _get_user(user_id: int) -> Optional[sqlite3.Row]:
-    conn = get_db()
-    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-    conn.close()
-    return row
-
-
-def _upsert_user(user_id: int, username: str, full_name: str, referred_by: int = 0):
-    conn = get_db()
-    conn.execute(
-        """
-        INSERT INTO users (user_id, username, full_name, referred_by)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            username    = excluded.username,
-            full_name   = excluded.full_name,
-            last_active = CURRENT_TIMESTAMP
-        """,
-        (user_id, username, full_name, referred_by),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _add_coins(user_id: int, coins: int):
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET coins = coins + ? WHERE user_id = ?", (coins, user_id)
-    )
-    conn.commit()
-    conn.close()
-
-
-def _deduct_coins(user_id: int, coins: int):
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id = ?",
-        (coins, user_id),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _check_daily(user_id: int, action: str) -> bool:
-    """Return True if the user has NOT yet claimed this reward today."""
+def claimed_today(user_id: int, task_id: str) -> bool:
     today = date.today().isoformat()
     conn = get_db()
     row = conn.execute(
-        "SELECT 1 FROM daily_rewards WHERE user_id=? AND action=? AND reward_date=?",
-        (user_id, action, today),
+        "SELECT 1 FROM task_claims WHERE user_id=? AND task_id=? AND DATE(claimed_at)=?",
+        (user_id, task_id, today)
     ).fetchone()
     conn.close()
-    return row is None
+    return row is not None
 
-
-def _mark_daily(user_id: int, action: str):
-    today = date.today().isoformat()
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO daily_rewards (user_id, action, reward_date) VALUES (?,?,?)",
-            (user_id, action, today),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _log(user_id: int, action: str, detail: str = ""):
+def record_claim(user_id: int, task_id: str, coins: int):
     conn = get_db()
     conn.execute(
-        "INSERT INTO logs (user_id, action, detail) VALUES (?,?,?)",
-        (user_id, action, detail),
+        "INSERT INTO task_claims (user_id, task_id, coins_earned) VALUES (?, ?, ?)",
+        (user_id, task_id, coins)
     )
     conn.commit()
     conn.close()
 
-
-def _create_withdrawal(user_id: int, coins: int, method: str, detail: str) -> int:
-    conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO withdrawals (user_id, coins, method, detail) VALUES (?,?,?,?)",
-        (user_id, coins, method, detail),
-    )
-    wid = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return wid
-
-
-def _get_withdrawal(wid: int) -> Optional[sqlite3.Row]:
-    conn = get_db()
-    row = conn.execute("SELECT * FROM withdrawals WHERE id=?", (wid,)).fetchone()
-    conn.close()
-    return row
-
-
-def _update_withdrawal_status(wid: int, status: str):
-    conn = get_db()
-    conn.execute(
-        "UPDATE withdrawals SET status=?, processed_at=CURRENT_TIMESTAMP WHERE id=?",
-        (status, wid),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _stats():
-    conn = get_db()
-    total   = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    active  = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE date(last_active) = date('now')"
-    ).fetchone()[0]
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM withdrawals WHERE status='pending'"
-    ).fetchone()[0]
-    banned  = conn.execute("SELECT COUNT(*) FROM users WHERE is_banned=1").fetchone()[0]
-    conn.close()
-    return total, active, pending, banned
-
-
-# Async wrappers using asyncio.get_event_loop().run_in_executor
-async def setting(key: str) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _get_setting, key)
-
-
-async def set_setting(key: str, value: str):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _set_setting, key, value)
-
-
-async def get_user(user_id: int):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _get_user, user_id)
-
-
-async def upsert_user(user_id, username, full_name, referred_by=0):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _upsert_user, user_id, username, full_name, referred_by)
-
-
-async def add_coins(user_id, coins):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _add_coins, user_id, coins)
-
-
-async def deduct_coins(user_id, coins):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _deduct_coins, user_id, coins)
-
-
-async def check_daily(user_id, action) -> bool:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _check_daily, user_id, action)
-
-
-async def mark_daily(user_id, action):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _mark_daily, user_id, action)
-
-
-async def log(user_id, action, detail=""):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _log, user_id, action, detail)
-
-
-async def create_withdrawal(user_id, coins, method, detail) -> int:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _create_withdrawal, user_id, coins, method, detail)
-
-
-async def get_withdrawal(wid):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _get_withdrawal, wid)
-
-
-async def update_withdrawal_status(wid, status):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _update_withdrawal_status, wid, status)
-
-
-async def stats():
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _stats)
-
-
-# =============================================================================
-# FSM STATES
-# =============================================================================
-
-class WithdrawStates(StatesGroup):
-    choosing_method = State()
-    entering_upi    = State()
-    uploading_qr    = State()
-
-
-class AdminStates(StatesGroup):
-    broadcast           = State()
-    ban_user            = State()
-    unban_user          = State()
-    edit_welcome        = State()
-    edit_image          = State()
-    edit_channel_1      = State()
-    edit_channel_2      = State()
-    edit_referral_bonus = State()
-    edit_min_withdraw   = State()
-    edit_coin_reward    = State()   # generic; context stored in FSM data
-    edit_link           = State()   # generic; key stored in FSM data
-
-
-# =============================================================================
-# KEYBOARDS
-# =============================================================================
-
-def kb_start(channel_1_url: str, channel_2_url: str, user_id: int = 0) -> InlineKeyboardMarkup:
-    # Telegram native share URL — opens share dialog with referral link pre-filled
-    ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
-    share_text = f"🤑 Join me & earn ₹250 rewards!\n{ref_link}"
-    import urllib.parse
-    share_url = f"https://t.me/share/url?url={urllib.parse.quote(ref_link)}&text={urllib.parse.quote(share_text)}"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="➜ Share Link", url=share_url),
-        ],
-        [
-            InlineKeyboardButton(text="➜ Join 1", url=channel_1_url),
-            InlineKeyboardButton(text="➜ Join 2", url=channel_2_url),
-        ],
-        [
-            InlineKeyboardButton(text="➲ VERIFY", callback_data="verify"),
-        ],
-    ])
-
-
-def kb_main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="➜ Task"),    KeyboardButton(text="➜ Survey")],
-            [KeyboardButton(text="➜ Bexacart (Top Deals)"), KeyboardButton(text="➜ Rewards")],
-            [KeyboardButton(text="➲ Balance")],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def kb_task(links: dict, rewards: dict) -> InlineKeyboardMarkup:
-    """5 task buttons, each opens a link; coins awarded on tap (once/day)."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=f"📺 Watch Ads +{rewards['watch_ads']} Coins",
-            url=links["watch_ads"],
-        )],
-        [InlineKeyboardButton(
-            text=f"📢 Join TG Channel +{rewards['join_tg']} Coins",
-            url=links["join_tg"],
-        )],
-        [InlineKeyboardButton(
-            text=f"📸 Follow Insta/Facebook +{rewards['follow_social']} Coins",
-            url=links["follow_social"],
-        )],
-        [InlineKeyboardButton(
-            text=f"▶️ Subscribe YouTube +{rewards['subscribe_yt']} Coins",
-            url=links["subscribe_yt"],
-        )],
-        [InlineKeyboardButton(
-            text=f"⭐ Rate Our App +{rewards['rate_app']} Coins",
-            url=links["rate_app"],
-        )],
-        [InlineKeyboardButton(text="↩ Back", callback_data="back_main")],
-    ])
-
-
-def kb_task_claim(rewards: dict) -> InlineKeyboardMarkup:
-    """Separate claim buttons so Aiogram can award coins on callback."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"✅ Claim Watch Ads (+{rewards['watch_ads']})",       callback_data="claim_watch_ads")],
-        [InlineKeyboardButton(text=f"✅ Claim Join TG (+{rewards['join_tg']})",           callback_data="claim_join_tg")],
-        [InlineKeyboardButton(text=f"✅ Claim Follow Social (+{rewards['follow_social']})", callback_data="claim_follow_social")],
-        [InlineKeyboardButton(text=f"✅ Claim Subscribe YT (+{rewards['subscribe_yt']})", callback_data="claim_subscribe_yt")],
-        [InlineKeyboardButton(text=f"✅ Claim Rate App (+{rewards['rate_app']})",         callback_data="claim_rate_app")],
-        [InlineKeyboardButton(text="↩ Back", callback_data="back_main")],
-    ])
-
-
-def _generic_menu(items, cb_prefix, back_cb="back_main") -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"{cb_prefix}_{key}")]
-            for key, label in items]
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data=back_cb)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_survey(links: dict, rewards: dict) -> InlineKeyboardMarkup:
-    items = [(str(i), f"📝 Survey {i} +{rewards[str(i)]} Coins") for i in range(1, 6)]
-    rows = []
-    for key, label in items:
-        rows.append([InlineKeyboardButton(text=label, url=links[key])])
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data="back_main")])
-    # Also add claim row
-    for i in range(1, 6):
-        rows.insert(i * 2 - 1, [InlineKeyboardButton(
-            text=f"✅ Claim Survey {i}", callback_data=f"claim_survey_{i}"
-        )])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_bexacart(links: dict, rewards: dict) -> InlineKeyboardMarkup:
-    names = {1: "Cloths", 2: "Mobiles", 3: "Accessories", 4: "Beauty", 5: "Others"}
-    rows = []
-    for i in range(1, 6):
-        rows.append([InlineKeyboardButton(
-            text=f"🛒 {names[i]} +{rewards[str(i)]} Coins", url=links[str(i)]
-        )])
-        rows.append([InlineKeyboardButton(
-            text=f"✅ Claim {names[i]}", callback_data=f"claim_bexacart_{i}"
-        )])
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data="back_main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_rewards_section(links: dict, rewards: dict) -> InlineKeyboardMarkup:
-    names = {
-        "vouchers": "🎟 My Vouchers",
-        "double_points": "💥 Activate Double Points",
-        "claim": "🎁 Claim Reward",
-        "unlock": "🔓 Unlock Reward",
-        "view": "👀 View Rewards",
-    }
-    rows = []
-    for key, label in names.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{label} +{rewards[key]} Coins", url=links[key]
-        )])
-        rows.append([InlineKeyboardButton(
-            text=f"✅ Claim {label.split(' ', 1)[1]}", callback_data=f"claim_rewards_{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data="back_main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_balance(coins: int, locked: int) -> InlineKeyboardMarkup:
-    rate = 40  # 1000 coins = ₹25 → 40 coins/₹
-    available_rupees = coins / rate if rate else 0
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=f"💰 Coins: {coins}  |  ₹{available_rupees:.2f}",
-            callback_data="noop"
-        )],
-        [InlineKeyboardButton(
-            text=f"🔒 Locked: {locked} Coins",
-            callback_data="noop"
-        )],
-        [InlineKeyboardButton(
-            text=f"📊 Total Assets: {coins + locked} Coins",
-            callback_data="noop"
-        )],
-        [InlineKeyboardButton(text="💸 Withdraw", callback_data="withdraw")],
-        [InlineKeyboardButton(text="↩ Back",      callback_data="back_main")],
-    ])
-
-
-def kb_withdraw_method() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏦 UPI ID",          callback_data="withdraw_upi")],
-        [InlineKeyboardButton(text="📸 QR Screenshot",   callback_data="withdraw_qr")],
-        [InlineKeyboardButton(text="❌ Cancel",           callback_data="back_main")],
-    ])
-
-
-def kb_admin_panel() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Dashboard",           callback_data="adm_dashboard")],
-        [InlineKeyboardButton(text="📣 Broadcast",           callback_data="adm_broadcast")],
-        [InlineKeyboardButton(text="🚫 Ban User",            callback_data="adm_ban"),
-         InlineKeyboardButton(text="✅ Unban User",          callback_data="adm_unban")],
-        [InlineKeyboardButton(text="✏️ Welcome Message",     callback_data="adm_edit_welcome")],
-        [InlineKeyboardButton(text="🖼 Start Image",         callback_data="adm_edit_image")],
-        [InlineKeyboardButton(text="📢 Channel Links",       callback_data="adm_edit_channels")],
-        [InlineKeyboardButton(text="💰 Referral Bonus",      callback_data="adm_edit_ref_bonus")],
-        [InlineKeyboardButton(text="💵 Min Withdraw",        callback_data="adm_edit_min_withdraw")],
-        [InlineKeyboardButton(text="🪙 Coin Rewards",        callback_data="adm_edit_rewards")],
-        [InlineKeyboardButton(text="🔗 Edit All 20 Links",   callback_data="adm_edit_links")],
-        [InlineKeyboardButton(text="📋 Logs",                callback_data="adm_logs")],
-        [InlineKeyboardButton(text="⏳ Pending Withdrawals", callback_data="adm_pending_wd")],
-    ])
-
-
-def kb_admin_rewards() -> InlineKeyboardMarkup:
-    """Sub-menu to pick which reward to edit."""
-    keys = [
-        ("reward_watch_ads",    "Watch Ads"),
-        ("reward_join_tg",      "Join TG"),
-        ("reward_follow_social","Follow Social"),
-        ("reward_subscribe_yt", "Subscribe YT"),
-        ("reward_rate_app",     "Rate App"),
-        ("reward_survey_1",     "Survey 1"),
-        ("reward_survey_2",     "Survey 2"),
-        ("reward_survey_3",     "Survey 3"),
-        ("reward_survey_4",     "Survey 4"),
-        ("reward_survey_5",     "Survey 5"),
-        ("reward_bexacart_1",   "Bexacart Cloths"),
-        ("reward_bexacart_2",   "Bexacart Mobiles"),
-        ("reward_bexacart_3",   "Bexacart Access."),
-        ("reward_bexacart_4",   "Bexacart Beauty"),
-        ("reward_bexacart_5",   "Bexacart Others"),
-        ("reward_vouchers",     "Reward Vouchers"),
-        ("reward_double_points","Double Points"),
-        ("reward_claim",        "Claim Reward"),
-        ("reward_unlock",       "Unlock Reward"),
-        ("reward_view",         "View Rewards"),
-    ]
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm_reward_{key}")]
-            for key, label in keys]
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data="adm_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_admin_links() -> InlineKeyboardMarkup:
-    keys = [
-        ("link_watch_ads",      "Watch Ads"),
-        ("link_join_tg",        "Join TG"),
-        ("link_follow_social",  "Follow Social"),
-        ("link_subscribe_yt",   "Subscribe YT"),
-        ("link_rate_app",       "Rate App"),
-        ("link_survey_1",       "Survey 1"),
-        ("link_survey_2",       "Survey 2"),
-        ("link_survey_3",       "Survey 3"),
-        ("link_survey_4",       "Survey 4"),
-        ("link_survey_5",       "Survey 5"),
-        ("link_bexacart_1",     "Bexacart Cloths"),
-        ("link_bexacart_2",     "Bexacart Mobiles"),
-        ("link_bexacart_3",     "Bexacart Access."),
-        ("link_bexacart_4",     "Bexacart Beauty"),
-        ("link_bexacart_5",     "Bexacart Others"),
-        ("link_vouchers",       "Vouchers"),
-        ("link_double_points",  "Double Points"),
-        ("link_claim",          "Claim Reward"),
-        ("link_unlock",         "Unlock Reward"),
-        ("link_view_rewards",   "View Rewards"),
-    ]
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm_link_{key}")]
-            for key, label in keys]
-    rows.append([InlineKeyboardButton(text="↩ Back", callback_data="adm_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_approve_reject(wid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Approve", callback_data=f"wd_approve_{wid}"),
-            InlineKeyboardButton(text="❌ Reject",  callback_data=f"wd_reject_{wid}"),
-        ]
-    ])
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-async def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-
-async def check_banned(user_id: int) -> bool:
-    user = await get_user(user_id)
-    return bool(user and user["is_banned"])
-
-
-async def check_membership(user_id: int) -> bool:
-    """Return True if the user is a member of both force-join channels."""
-    ch1_raw = await setting("channel_1")
-    ch2_raw = await setting("channel_2")
-
-    async def member(ch_raw):
-        ch_username = ch_raw.split("|")[0].strip()
-        try:
-            member = await bot.get_chat_member(ch_username, user_id)
-            return member.status not in ("left", "kicked", "banned")
-        except Exception as e:
-            logger.warning(f"Membership check error for {ch_username}: {e}")
-            return False
-
-    r1 = await member(ch1_raw)
-    r2 = await member(ch2_raw)
-    return r1 and r2
-
-
-async def send_start_screen(user_id: int, name: str, referred_by: int = 0):
-    """Send the start / welcome screen to a user."""
-    caption_tpl = await setting("welcome_caption")
-    # Use only the first name for a cleaner display
-    first_name = name.split()[0] if name else name
-    caption = caption_tpl.replace("{name}", first_name)
-    caption += f"\n\n🔗 Your Referral Link:\n<code>https://t.me/{BOT_USERNAME}?start={user_id}</code>"
-
-    ch1_raw = await setting("channel_1")
-    ch2_raw = await setting("channel_2")
-    ch1_url = ch1_raw.split("|")[-1].strip()
-    ch2_url = ch2_raw.split("|")[-1].strip()
-
-    markup = kb_start(ch1_url, ch2_url, user_id)
-
-    # Try cached file_id first, then download from URL, then text-only fallback
-    image_id  = await setting("start_image")
-    image_url = await setting("start_image_url")
-
-    if image_id:
-        # Use cached Telegram file_id
-        try:
-            await bot.send_photo(user_id, photo=image_id, caption=caption, reply_markup=markup)
-            return
-        except Exception:
-            # file_id stale — clear it and fall through
-            await set_setting("start_image", "")
-
-    if image_url:
-        # Send via URL; Telegram will download it
-        try:
-            msg = await bot.send_photo(user_id, photo=image_url, caption=caption, reply_markup=markup)
-            # Cache the file_id for future sends (faster + avoids re-downloading)
-            if msg.photo:
-                await set_setting("start_image", msg.photo[-1].file_id)
-            return
-        except Exception as e:
-            logger.warning(f"Could not send image from URL: {e}")
-
-    # Final fallback: text only
-    await bot.send_message(user_id, caption, reply_markup=markup)
-
-
-async def coins_to_rupees(coins: int) -> str:
-    rate_str = await setting("coins_per_rupee")
-    rate = float(rate_str) if rate_str else 40.0
-    return f"₹{coins / rate:.2f}"
-
-
-# =============================================================================
-# COMMAND HANDLERS
-# =============================================================================
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# /start HANDLER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user = message.from_user
-    args = message.text.split(maxsplit=1)
-    referred_by = 0
+    args = message.text.split()
+    referrer_id = None
 
     if len(args) > 1:
         try:
-            referred_by = int(args[1])
-            if referred_by == user.id:
-                referred_by = 0
+            referrer_id = int(args[1])
+            if referrer_id == user.id:
+                referrer_id = None
         except ValueError:
-            referred_by = 0
+            pass
 
-    # Upsert user
-    await upsert_user(user.id, user.username or "", user.full_name, referred_by)
+    is_new = ensure_user(user.id, user.username, user.full_name, referrer_id)
 
-    # Award referral bonus to referrer (only if new user)
-    existing = await get_user(user.id)
-    if referred_by and existing and existing["coins"] == 0:
-        bonus_str = await setting("referral_bonus")
-        bonus = int(bonus_str) if bonus_str.isdigit() else 50
-        await add_coins(referred_by, bonus)
-        await log(referred_by, "referral_bonus", f"Referred user {user.id}, +{bonus} coins")
+    db_user = get_user(user.id)
+    if db_user and db_user["is_banned"]:
+        await message.answer("🚫 You are banned from using this bot.")
+        return
+
+    # Give referral bonus if new user with valid referrer
+    if is_new and referrer_id:
+        referrer = get_user(referrer_id)
+        if referrer:
+            bonus = int(get_setting("referral_bonus", "100"))
+            add_coins(referrer_id, bonus)
+            add_log(referrer_id, "referral_bonus", f"Referred {user.id}, +{bonus} coins")
+            try:
+                await bot.send_message(
+                    referrer_id,
+                    f"🎉 <b>New Referral!</b>\n{user.full_name} joined via your link.\n+{bonus} coins added to your account!"
+                )
+            except Exception:
+                pass
+
+    welcome = get_setting("welcome_message", "Welcome!").replace("{name}", user.full_name)
+    image_url = get_setting("start_image")
+
+    await message.answer_photo(
+        photo=image_url,
+        caption=welcome,
+        reply_markup=kb_start()
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SECRET ADMIN COMMAND
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.message(Command("admin_2905"))
+async def cmd_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return  # Silently ignore
+
+    conn = get_db()
+    total_users    = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+    today_str      = date.today().isoformat()
+    active_today   = conn.execute(
+        "SELECT COUNT(*) as c FROM users WHERE DATE(last_active)=?", (today_str,)
+    ).fetchone()["c"]
+    total_refs     = conn.execute(
+        "SELECT COUNT(*) as c FROM users WHERE referrer_id IS NOT NULL"
+    ).fetchone()["c"]
+    total_coins    = conn.execute("SELECT SUM(coins_earned) as c FROM task_claims").fetchone()["c"] or 0
+    pending_w      = conn.execute(
+        "SELECT COUNT(*) as c FROM withdrawals WHERE status='pending'"
+    ).fetchone()["c"]
+    conn.close()
+
+    text = (
+        "🔐 <b>Admin Panel</b>\n\n"
+        f"👥 Total Users: <b>{total_users}</b>\n"
+        f"🟢 Active Today: <b>{active_today}</b>\n"
+        f"👥 Total Referrals: <b>{total_refs}</b>\n"
+        f"🪙 Total Coins Distributed: <b>{total_coins}</b>\n"
+        f"💳 Pending Withdrawals: <b>{pending_w}</b>"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📢 Broadcast",     callback_data="adm_broadcast"),
+            InlineKeyboardButton(text="🚫 Ban User",       callback_data="adm_ban"),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Unban User",    callback_data="adm_unban"),
+            InlineKeyboardButton(text="💰 Add Coins",      callback_data="adm_add_coins"),
+        ],
+        [
+            InlineKeyboardButton(text="➖ Remove Coins",  callback_data="adm_remove_coins"),
+            InlineKeyboardButton(text="💳 Withdrawals",   callback_data="adm_withdrawals"),
+        ],
+        [
+            InlineKeyboardButton(text="📝 Edit Welcome",  callback_data="adm_edit_welcome"),
+            InlineKeyboardButton(text="🖼 Edit Image",    callback_data="adm_edit_image"),
+        ],
+        [
+            InlineKeyboardButton(text="📢 Edit Channel 1", callback_data="adm_edit_ch1"),
+            InlineKeyboardButton(text="📢 Edit Channel 2", callback_data="adm_edit_ch2"),
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Referral Bonus",  callback_data="adm_edit_ref_bonus"),
+            InlineKeyboardButton(text="💰 Min Withdraw",    callback_data="adm_edit_min_w"),
+        ],
+        [
+            InlineKeyboardButton(text="🪙 Edit Rewards",    callback_data="adm_edit_rewards"),
+            InlineKeyboardButton(text="🔗 Edit Task URLs",  callback_data="adm_edit_urls"),
+        ],
+        [
+            InlineKeyboardButton(text="🟢 Toggle Tasks",    callback_data="adm_toggle_tasks"),
+            InlineKeyboardButton(text="📊 Logs",            callback_data="adm_logs"),
+        ],
+    ])
+    await message.answer(text, reply_markup=kb)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VERIFY CALLBACK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data == "verify")
+async def cb_verify(call: CallbackQuery):
+    user = call.from_user
+    db_user = get_user(user.id)
+    if not db_user:
+        ensure_user(user.id, user.username, user.full_name)
+
+    is_member = await check_membership(user.id)
+    if not is_member:
+        await call.answer(
+            "❌ Please join BOTH channels first, then tap Verify!",
+            show_alert=True
+        )
+        return
+
+    # Mark as verified
+    conn = get_db()
+    conn.execute("UPDATE users SET is_verified=1 WHERE user_id=?", (user.id,))
+    conn.commit()
+    conn.close()
+
+    await call.answer("✅ Verified! Welcome!", show_alert=True)
+    await call.message.answer(
+        f"✅ <b>Access Unlocked!</b>\n\nWelcome, {user.full_name}!\nUse the menu below to start earning.",
+        reply_markup=kb_main_menu()
+    )
+    add_log(user.id, "verified", "User verified channel membership")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SHARE LINK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data == "share_link")
+async def cb_share_link(call: CallbackQuery):
+    user = call.from_user
+    link = f"https://t.me/{BOT_USERNAME}?start={user.id}"
+    bonus = get_setting("referral_bonus", "100")
+    await call.message.answer(
+        f"🔗 <b>Your Referral Link:</b>\n<code>{link}</code>\n\n"
+        f"🎁 Earn <b>{bonus} coins</b> for every friend who joins!\n\n"
+        f"Share this link and grow your earnings!"
+    )
+    await call.answer()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VERIFIED GUARD
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def guard_verified(call: CallbackQuery) -> bool:
+    db_user = get_user(call.from_user.id)
+    if not db_user or not db_user["is_verified"]:
+        await call.answer("⚠️ Please verify channel membership first!", show_alert=True)
+        return False
+    if db_user["is_banned"]:
+        await call.answer("🚫 You are banned.", show_alert=True)
+        return False
+    return True
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MAIN MENU CALLBACKS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data == "back_main")
+async def cb_back_main(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    await call.message.answer("📋 <b>Main Menu</b>", reply_markup=kb_main_menu())
+    await call.answer()
+
+@router.callback_query(F.data == "menu_task")
+async def cb_menu_task(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    if get_setting("tasks_enabled", "1") == "0":
+        await call.answer("⚠️ Tasks are currently disabled.", show_alert=True)
+        return
+    await call.message.answer_photo(
+        photo="https://i.postimg.cc/3RxWHFPP/Untitled-June-18-2026-at-00-17-15-1-(2).png",
+        caption="📋 <b>Task Page</b>\nComplete tasks and earn coins!",
+        reply_markup=kb_task_page()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "menu_survey")
+async def cb_menu_survey(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    await call.message.answer_photo(
+        photo="https://i.postimg.cc/SKyxWGQv/Untitled-June-18-2026-at-00-17-15-2-(1).png",
+        caption="📝 <b>Survey Page</b>\nComplete surveys and earn coins!",
+        reply_markup=kb_survey_page()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "menu_bexacart")
+async def cb_menu_bexacart(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    await call.message.answer_photo(
+        photo="https://i.postimg.cc/Z0tT08D1/Untitled-June-18-2026-at-00-17-15-3-(1).png",
+        caption="🛒 <b>Bexacart - Top Deals</b>\nShop and earn coins!",
+        reply_markup=kb_bexacart_page()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "menu_rewards")
+async def cb_menu_rewards(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    await call.message.answer_photo(
+        photo="https://i.postimg.cc/c4w3hXZH/Untitled-June-18-2026-at-00-17-15-4-(1).png",
+        caption="🎁 <b>Rewards Page</b>\nUnlock and claim rewards!",
+        reply_markup=kb_rewards_page()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "menu_balance")
+async def cb_menu_balance(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+    user = get_user(call.from_user.id)
+    coins    = user["coins"]
+    locked   = user["locked_coins"]
+    balance  = coins_to_rupees(coins)
+    locked_r = coins_to_rupees(locked)
+    total    = round(balance + locked_r, 2)
+    await call.message.answer(
+        f"💼 <b>Your Balance</b>\n\n"
+        f"🪙 Coins: <b>{coins}</b>\n"
+        f"💰 Available Balance: <b>₹{balance}</b>\n"
+        f"🔒 Locked Balance: <b>₹{locked_r}</b>\n"
+        f"🏧 Total Assets: <b>₹{total}</b>\n\n"
+        f"<i>40 Coins = ₹1</i>",
+        reply_markup=kb_balance_page()
+    )
+    await call.answer()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TASK BUTTON HANDLER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data.startswith("task_"))
+async def cb_task_button(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+
+    task_id = call.data[5:]  # strip "task_"
+    if task_id not in TASK_META:
+        await call.answer("Unknown task.", show_alert=True)
+        return
+
+    reward_key, url_key, label, img_url = TASK_META[task_id]
+    coins = int(get_setting(reward_key, "0"))
+    url   = get_setting(url_key, "https://t.me/")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Open Task", url=url)],
+        [InlineKeyboardButton(text=f"✅ Claim {coins} Coins", callback_data=f"claim_{task_id}")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_main")],
+    ])
+
+    await call.message.answer_photo(
+        photo=img_url,
+        caption=(
+            f"📌 <b>{label}</b>\n\n"
+            f"1️⃣ Click <b>Open Task</b>\n"
+            f"2️⃣ Complete the task\n"
+            f"3️⃣ Come back & click <b>Claim {coins} Coins</b>\n\n"
+            f"⚠️ You must open the task before claiming!"
+        ),
+        reply_markup=kb
+    )
+    # Mark as opened when user sees this page
+    mark_task_opened(call.from_user.id, task_id)
+    await call.answer()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CLAIM HANDLER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data.startswith("claim_"))
+async def cb_claim(call: CallbackQuery):
+    if not await guard_verified(call):
+        return
+
+    task_id = call.data[6:]  # strip "claim_"
+    user_id = call.from_user.id
+
+    if task_id not in TASK_META:
+        await call.answer("Unknown task.", show_alert=True)
+        return
+
+    # Must have opened task first
+    if not has_opened_task(user_id, task_id):
+        await call.answer("⚠️ Please open the task first before claiming!", show_alert=True)
+        return
+
+    # Check daily limit
+    if claimed_today(user_id, task_id):
+        await call.answer("⚠️ Today's reward already claimed. Come back tomorrow!", show_alert=True)
+        return
+
+    reward_key = TASK_META[task_id][0]
+    label      = TASK_META[task_id][2]
+    coins = int(get_setting(reward_key, "0"))
+
+    add_coins(user_id, coins)
+    record_claim(user_id, task_id, coins)
+    add_log(user_id, "task_claim", f"task={task_id}, coins={coins}")
+
+    await call.answer(f"✅ +{coins} Coins added!", show_alert=True)
+    await call.message.answer(
+        f"🎉 <b>Coins Claimed!</b>\n\n"
+        f"📌 Task: <b>{label}</b>\n"
+        f"🪙 +<b>{coins} Coins</b> added to your account!\n\n"
+        f"Total balance updated. Use /start to see your balance."
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WITHDRAW FLOW
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data == "withdraw")
+async def cb_withdraw(call: CallbackQuery, state: FSMContext):
+    if not await guard_verified(call):
+        return
+
+    user = get_user(call.from_user.id)
+    coins = user["coins"]
+    min_w = int(get_setting("min_withdraw", "500"))
+    min_coins = rupees_to_coins(min_w)
+
+    if coins < min_coins:
+        await call.answer(
+            f"❌ Minimum withdrawal is ₹{min_w} ({min_coins} coins).\nYou have {coins} coins.",
+            show_alert=True
+        )
+        return
+
+    await call.message.answer(
+        f"💳 <b>Withdraw</b>\n\n"
+        f"🪙 Your Coins: <b>{coins}</b>\n"
+        f"💰 Amount: <b>₹{coins_to_rupees(coins)}</b>\n\n"
+        f"Choose withdrawal method:",
+        reply_markup=kb_withdraw_method()
+    )
+    await state.set_state(WithdrawStates.choose_method)
+    await call.answer()
+
+@router.callback_query(F.data == "withdraw_upi", WithdrawStates.choose_method)
+async def cb_withdraw_upi(call: CallbackQuery, state: FSMContext):
+    await state.set_state(WithdrawStates.enter_upi)
+    await call.message.answer("💳 Please enter your <b>UPI ID</b>:")
+    await call.answer()
+
+@router.message(WithdrawStates.enter_upi)
+async def process_upi(message: Message, state: FSMContext):
+    upi = message.text.strip()
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    coins = user["coins"]
+    amount = coins_to_rupees(coins)
+    min_w = int(get_setting("min_withdraw", "500"))
+
+    if coins < rupees_to_coins(min_w):
+        await message.answer("❌ Insufficient coins for withdrawal.")
+        await state.clear()
+        return
+
+    # Save withdrawal
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO withdrawals (user_id, coins, amount, method, upi_id) VALUES (?, ?, ?, 'upi', ?)",
+        (user_id, coins, amount, upi)
+    )
+    w_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    add_log(user_id, "withdraw_request", f"method=UPI, amount=₹{amount}, upi={upi}")
+
+    # Notify admin
+    kb_admin = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"wadm_approve_{w_id}"),
+            InlineKeyboardButton(text="❌ Reject",  callback_data=f"wadm_reject_{w_id}"),
+        ]
+    ])
+    await bot.send_message(
+        ADMIN_ID,
+        f"💳 <b>Withdrawal Request #{w_id}</b>\n\n"
+        f"👤 Name: {user['full_name']}\n"
+        f"🆔 User ID: {user_id}\n"
+        f"🪙 Coins: {coins}\n"
+        f"💰 Amount: ₹{amount}\n"
+        f"💳 UPI: <code>{upi}</code>",
+        reply_markup=kb_admin
+    )
+
+    await message.answer(
+        f"✅ <b>Withdrawal Request Sent!</b>\n\n"
+        f"💰 Amount: ₹{amount}\n"
+        f"💳 UPI: {upi}\n\n"
+        f"Admin will process it soon."
+    )
+    await state.clear()
+
+@router.callback_query(F.data == "withdraw_qr", WithdrawStates.choose_method)
+async def cb_withdraw_qr(call: CallbackQuery, state: FSMContext):
+    await state.set_state(WithdrawStates.upload_qr)
+    await call.message.answer("📷 Please send your <b>QR Code screenshot</b>:")
+    await call.answer()
+
+@router.message(WithdrawStates.upload_qr, F.photo)
+async def process_qr(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    coins = user["coins"]
+    amount = coins_to_rupees(coins)
+    qr_id = message.photo[-1].file_id
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO withdrawals (user_id, coins, amount, method, qr_file_id) VALUES (?, ?, ?, 'qr', ?)",
+        (user_id, coins, amount, qr_id)
+    )
+    w_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    add_log(user_id, "withdraw_request", f"method=QR, amount=₹{amount}")
+
+    kb_admin = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"wadm_approve_{w_id}"),
+            InlineKeyboardButton(text="❌ Reject",  callback_data=f"wadm_reject_{w_id}"),
+        ]
+    ])
+    await bot.send_photo(
+        ADMIN_ID,
+        photo=qr_id,
+        caption=(
+            f"💳 <b>Withdrawal Request #{w_id}</b>\n\n"
+            f"👤 Name: {user['full_name']}\n"
+            f"🆔 User ID: {user_id}\n"
+            f"🪙 Coins: {coins}\n"
+            f"💰 Amount: ₹{amount}\n"
+            f"📷 Method: QR"
+        ),
+        reply_markup=kb_admin
+    )
+    await message.answer(
+        f"✅ <b>Withdrawal Request Sent!</b>\n\n"
+        f"💰 Amount: ₹{amount}\n"
+        f"📷 Method: QR Code\n\n"
+        f"Admin will process it soon."
+    )
+    await state.clear()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ADMIN — WITHDRAWAL APPROVE/REJECT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.callback_query(F.data.startswith("wadm_"))
+async def cb_wadm(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+
+    parts  = call.data.split("_")
+    action = parts[1]  # approve / reject
+    w_id   = int(parts[2])
+
+    conn = get_db()
+    w = conn.execute("SELECT * FROM withdrawals WHERE id=?", (w_id,)).fetchone()
+
+    if not w:
+        await call.answer("Withdrawal not found.", show_alert=True)
+        conn.close()
+        return
+
+    if w["status"] != "pending":
+        await call.answer(f"Already {w['status']}.", show_alert=True)
+        conn.close()
+        return
+
+    if action == "approve":
+        # Deduct coins
+        conn.execute("UPDATE users SET coins = MAX(0, coins - ?) WHERE user_id=?",
+                     (w["coins"], w["user_id"]))
+        conn.execute(
+            "UPDATE withdrawals SET status='approved', processed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (w_id,)
+        )
+        conn.commit()
+        conn.close()
+        add_log(w["user_id"], "withdraw_approved", f"₹{w['amount']}")
+        await call.answer("✅ Approved!", show_alert=True)
+        await call.message.edit_caption(call.message.caption + "\n\n✅ <b>APPROVED</b>")
         try:
             await bot.send_message(
-                referred_by,
-                f"🎉 <b>Referral Bonus!</b>\nYour friend <b>{user.full_name}</b> joined.\n"
-                f"You earned <b>{bonus} Coins</b>!",
+                w["user_id"],
+                f"✅ <b>Withdrawal Approved!</b>\n💰 ₹{w['amount']} has been processed.\nCoins deducted from your account."
             )
         except Exception:
             pass
 
-    if await check_banned(user.id):
-        await message.answer("🚫 You have been banned from this bot.")
-        return
-
-    await send_start_screen(user.id, user.full_name, referred_by)
-    await log(user.id, "start", f"ref={referred_by}")
-
-
-@router.message(Command("admin_2905"))
-async def cmd_admin(message: Message):
-    if not await is_admin(message.from_user.id):
-        await message.answer("❌ Access denied.")
-        return
-    await message.answer("🛡 <b>Admin Panel</b>", reply_markup=kb_admin_panel())
-
-
-# =============================================================================
-# MAIN MENU — Reply keyboard
-# =============================================================================
-
-@router.message(F.text == "➜ Task")
-async def menu_task(message: Message):
-    if await check_banned(message.from_user.id):
-        return
-    # Load links & rewards from DB
-    links = {
-        "watch_ads":     await setting("link_watch_ads"),
-        "join_tg":       await setting("link_join_tg"),
-        "follow_social": await setting("link_follow_social"),
-        "subscribe_yt":  await setting("link_subscribe_yt"),
-        "rate_app":      await setting("link_rate_app"),
-    }
-    rewards = {
-        "watch_ads":     await setting("reward_watch_ads"),
-        "join_tg":       await setting("reward_join_tg"),
-        "follow_social": await setting("reward_follow_social"),
-        "subscribe_yt":  await setting("reward_subscribe_yt"),
-        "rate_app":      await setting("reward_rate_app"),
-    }
-    await message.answer(
-        "📋 <b>Task Menu</b>\nComplete tasks to earn coins.\n"
-        "👆 Open the link, then tap ✅ Claim to get your coins (once/day).",
-        reply_markup=kb_task(links, rewards),
-    )
-    # Also send claim buttons
-    await message.answer("👇 Tap to claim your daily reward:", reply_markup=kb_task_claim(rewards))
-
-
-@router.message(F.text == "➜ Survey")
-async def menu_survey(message: Message):
-    if await check_banned(message.from_user.id):
-        return
-    links = {str(i): await setting(f"link_survey_{i}") for i in range(1, 6)}
-    rewards = {str(i): await setting(f"reward_survey_{i}") for i in range(1, 6)}
-    await message.answer("📝 <b>Survey Menu</b>\nComplete surveys to earn coins (once/day each).",
-                         reply_markup=kb_survey(links, rewards))
-
-
-@router.message(F.text == "➜ Bexacart (Top Deals)")
-async def menu_bexacart(message: Message):
-    if await check_banned(message.from_user.id):
-        return
-    links = {str(i): await setting(f"link_bexacart_{i}") for i in range(1, 6)}
-    rewards = {str(i): await setting(f"reward_bexacart_{i}") for i in range(1, 6)}
-    await message.answer("🛒 <b>Bexacart — Top Deals</b>\nShop & earn coins (once/day each category).",
-                         reply_markup=kb_bexacart(links, rewards))
-
-
-@router.message(F.text == "➜ Rewards")
-async def menu_rewards(message: Message):
-    if await check_banned(message.from_user.id):
-        return
-    links = {
-        "vouchers":      await setting("link_vouchers"),
-        "double_points": await setting("link_double_points"),
-        "claim":         await setting("link_claim"),
-        "unlock":        await setting("link_unlock"),
-        "view":          await setting("link_view_rewards"),
-    }
-    rewards = {
-        "vouchers":      await setting("reward_vouchers"),
-        "double_points": await setting("reward_double_points"),
-        "claim":         await setting("reward_claim"),
-        "unlock":        await setting("reward_unlock"),
-        "view":          await setting("reward_view"),
-    }
-    await message.answer("🎁 <b>Rewards</b>\nUnlock great rewards (once/day each).",
-                         reply_markup=kb_rewards_section(links, rewards))
-
-
-@router.message(F.text == "➲ Balance")
-async def menu_balance(message: Message):
-    if await check_banned(message.from_user.id):
-        return
-    user = await get_user(message.from_user.id)
-    if not user:
-        await message.answer("Please /start first.")
-        return
-    coins  = user["coins"]
-    locked = user["locked_coins"]
-    rate_str = await setting("coins_per_rupee")
-    rate = float(rate_str) if rate_str else 40.0
-    txt = (
-        f"💰 <b>Your Balance</b>\n\n"
-        f"🪙 Coins : <b>{coins}</b>  ({coins/rate:.2f} ₹)\n"
-        f"🔒 Locked: <b>{locked}</b> ({locked/rate:.2f} ₹)\n"
-        f"📊 Total : <b>{coins+locked}</b> ({(coins+locked)/rate:.2f} ₹)\n\n"
-        f"<i>1000 Coins = ₹25</i>"
-    )
-    await message.answer(txt, reply_markup=kb_balance(coins, locked))
-
-
-# =============================================================================
-# CALLBACK HANDLERS
-# =============================================================================
-
-# ── Verify (force-join check) ─────────────────────────────────────────────────
-@router.callback_query(F.data == "verify")
-async def cb_verify(cq: CallbackQuery):
-    await cq.answer()
-    if await check_banned(cq.from_user.id):
-        await cq.message.answer("🚫 You are banned.")
-        return
-    joined = await check_membership(cq.from_user.id)
-    if joined:
-        await cq.message.answer(
-            "✅ <b>Verified!</b> Welcome aboard.",
-            reply_markup=kb_main_menu(),
+    elif action == "reject":
+        conn.execute(
+            "UPDATE withdrawals SET status='rejected', processed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (w_id,)
         )
-    else:
-        ch1_raw = await setting("channel_1")
-        ch2_raw = await setting("channel_2")
-        ch1_url = ch1_raw.split("|")[-1].strip()
-        ch2_url = ch2_raw.split("|")[-1].strip()
-        await cq.message.answer(
-            "⚠️ You haven't joined both channels yet.\n"
-            "Please join both and then tap <b>VERIFY</b> again.",
-            reply_markup=kb_start(ch1_url, ch2_url, cq.from_user.id),
-        )
+        conn.commit()
+        conn.close()
+        add_log(w["user_id"], "withdraw_rejected", f"₹{w['amount']}")
+        await call.answer("❌ Rejected!", show_alert=True)
+        await call.message.edit_caption(call.message.caption + "\n\n❌ <b>REJECTED</b>")
+        try:
+            await bot.send_message(
+                w["user_id"],
+                f"❌ <b>Withdrawal Rejected!</b>\n\nYour request for ₹{w['amount']} was rejected by admin.\nCoins have NOT been deducted."
+            )
+        except Exception:
+            pass
 
-
-# ── Back to main ──────────────────────────────────────────────────────────────
-@router.callback_query(F.data == "back_main")
-async def cb_back_main(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    await state.clear()
-    await cq.message.answer("🏠 Main Menu", reply_markup=kb_main_menu())
-
-
-# ── noop ──────────────────────────────────────────────────────────────────────
-@router.callback_query(F.data == "noop")
-async def cb_noop(cq: CallbackQuery):
-    await cq.answer()
-
-
-# ── Generic daily-reward claim ────────────────────────────────────────────────
-async def _handle_claim(cq: CallbackQuery, action: str, reward_key: str, label: str):
-    """Unified claim logic: check daily, award coins, respond."""
-    await cq.answer()
-    uid = cq.from_user.id
-    if await check_banned(uid):
-        await cq.message.answer("🚫 You are banned.")
-        return
-    can_claim = await check_daily(uid, action)
-    if not can_claim:
-        await cq.message.answer(f"⏰ You've already claimed <b>{label}</b> today.\nCome back tomorrow!")
-        return
-    reward_str = await setting(reward_key)
-    reward = int(reward_str) if reward_str.isdigit() else 0
-    await add_coins(uid, reward)
-    await mark_daily(uid, action)
-    await log(uid, "claim", f"action={action}, +{reward}")
-    await cq.message.answer(f"🎉 <b>+{reward} Coins</b> added for <b>{label}</b>!\n🪙 Keep earning!")
-
-
-# Task claims
-@router.callback_query(F.data == "claim_watch_ads")
-async def cb_claim_watch_ads(cq: CallbackQuery):
-    await _handle_claim(cq, "watch_ads", "reward_watch_ads", "Watch Ads")
-
-@router.callback_query(F.data == "claim_join_tg")
-async def cb_claim_join_tg(cq: CallbackQuery):
-    await _handle_claim(cq, "join_tg", "reward_join_tg", "Join TG Channel")
-
-@router.callback_query(F.data == "claim_follow_social")
-async def cb_claim_follow_social(cq: CallbackQuery):
-    await _handle_claim(cq, "follow_social", "reward_follow_social", "Follow Social")
-
-@router.callback_query(F.data == "claim_subscribe_yt")
-async def cb_claim_subscribe_yt(cq: CallbackQuery):
-    await _handle_claim(cq, "subscribe_yt", "reward_subscribe_yt", "Subscribe YouTube")
-
-@router.callback_query(F.data == "claim_rate_app")
-async def cb_claim_rate_app(cq: CallbackQuery):
-    await _handle_claim(cq, "rate_app", "reward_rate_app", "Rate Our App")
-
-# Survey claims
-@router.callback_query(F.data.startswith("claim_survey_"))
-async def cb_claim_survey(cq: CallbackQuery):
-    n = cq.data.split("_")[-1]
-    await _handle_claim(cq, f"survey_{n}", f"reward_survey_{n}", f"Survey {n}")
-
-# Bexacart claims
-@router.callback_query(F.data.startswith("claim_bexacart_"))
-async def cb_claim_bexacart(cq: CallbackQuery):
-    n = cq.data.split("_")[-1]
-    names = {"1": "Cloths", "2": "Mobiles", "3": "Accessories", "4": "Beauty", "5": "Others"}
-    await _handle_claim(cq, f"bexacart_{n}", f"reward_bexacart_{n}", names.get(n, f"Category {n}"))
-
-# Rewards section claims
-@router.callback_query(F.data.startswith("claim_rewards_"))
-async def cb_claim_rewards(cq: CallbackQuery):
-    key = cq.data.replace("claim_rewards_", "")
-    labels = {
-        "vouchers": "My Vouchers", "double_points": "Double Points",
-        "claim": "Claim Reward", "unlock": "Unlock Reward", "view": "View Rewards",
-    }
-    await _handle_claim(cq, f"rewards_{key}", f"reward_{key}", labels.get(key, key))
-
-
-# =============================================================================
-# WITHDRAW FLOW
-# =============================================================================
-
-@router.callback_query(F.data == "withdraw")
-async def cb_withdraw(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    uid = cq.from_user.id
-    user = await get_user(uid)
-    min_wd_str = await setting("min_withdraw_coins")
-    min_wd = int(min_wd_str) if min_wd_str.isdigit() else 1000
-    if not user or user["coins"] < min_wd:
-        rupees = await coins_to_rupees(min_wd)
-        await cq.message.answer(
-            f"❌ Minimum withdraw is <b>{min_wd} Coins</b> ({rupees}).\n"
-            f"You have <b>{user['coins'] if user else 0} Coins</b>."
-        )
-        return
-    await state.set_state(WithdrawStates.choosing_method)
-    await cq.message.answer(
-        "💸 <b>Withdraw</b>\nChoose your preferred withdrawal method:",
-        reply_markup=kb_withdraw_method(),
-    )
-
-
-@router.callback_query(F.data == "withdraw_upi", WithdrawStates.choosing_method)
-async def cb_withdraw_upi(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    await state.set_state(WithdrawStates.entering_upi)
-    await cq.message.answer("🏦 Please enter your <b>UPI ID</b>:\n<i>e.g. name@bank</i>",
-                            reply_markup=ReplyKeyboardRemove())
-
-
-@router.message(WithdrawStates.entering_upi)
-async def process_upi(message: Message, state: FSMContext):
-    upi = message.text.strip()
-    if "@" not in upi:
-        await message.answer("⚠️ Invalid UPI ID. Please re-enter:")
-        return
-    uid = message.from_user.id
-    user = await get_user(uid)
-    coins = user["coins"] if user else 0
-    wid = await create_withdrawal(uid, coins, "upi", upi)
-    # Lock coins
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET locked_coins=locked_coins+?, coins=MAX(0,coins-?) WHERE user_id=?",
-        (coins, coins, uid)
-    )
-    conn.commit()
-    conn.close()
-    await state.clear()
-    await message.answer(
-        f"✅ Withdrawal request <b>#{wid}</b> submitted!\n"
-        f"💰 Amount: <b>{coins} Coins</b>\n📬 UPI: <code>{upi}</code>\n\n"
-        "⏳ Admin will process it soon.",
-        reply_markup=kb_main_menu(),
-    )
-    await log(uid, "withdraw_request", f"wid={wid}, coins={coins}, upi={upi}")
-    # Notify admin
-    await bot.send_message(
-        ADMIN_ID,
-        f"📥 <b>New Withdrawal Request #{wid}</b>\n"
-        f"👤 User: {message.from_user.full_name} (<code>{uid}</code>)\n"
-        f"💰 Coins: {coins}\n🏦 UPI: <code>{upi}</code>",
-        reply_markup=kb_approve_reject(wid),
-    )
-
-
-@router.callback_query(F.data == "withdraw_qr", WithdrawStates.choosing_method)
-async def cb_withdraw_qr(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    await state.set_state(WithdrawStates.uploading_qr)
-    await cq.message.answer("📸 Please send your <b>QR Code Screenshot</b>:",
-                            reply_markup=ReplyKeyboardRemove())
-
-
-@router.message(WithdrawStates.uploading_qr, F.photo)
-async def process_qr(message: Message, state: FSMContext):
-    file_id = message.photo[-1].file_id
-    uid = message.from_user.id
-    user = await get_user(uid)
-    coins = user["coins"] if user else 0
-    wid = await create_withdrawal(uid, coins, "qr", file_id)
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET locked_coins=locked_coins+?, coins=MAX(0,coins-?) WHERE user_id=?",
-        (coins, coins, uid)
-    )
-    conn.commit()
-    conn.close()
-    await state.clear()
-    await message.answer(
-        f"✅ Withdrawal request <b>#{wid}</b> submitted!\n"
-        f"💰 Amount: <b>{coins} Coins</b>\n📸 QR Screenshot received.\n\n"
-        "⏳ Admin will process it soon.",
-        reply_markup=kb_main_menu(),
-    )
-    await log(uid, "withdraw_request", f"wid={wid}, coins={coins}, method=qr")
-    await bot.send_photo(
-        ADMIN_ID, photo=file_id,
-        caption=(
-            f"📥 <b>New Withdrawal Request #{wid}</b>\n"
-            f"👤 User: {message.from_user.full_name} (<code>{uid}</code>)\n"
-            f"💰 Coins: {coins}\n📸 QR Screenshot above"
-        ),
-        reply_markup=kb_approve_reject(wid),
-    )
-
-
-# ── Admin: approve/reject withdrawals ─────────────────────────────────────────
-@router.callback_query(F.data.startswith("wd_approve_"))
-async def cb_wd_approve(cq: CallbackQuery):
-    if not await is_admin(cq.from_user.id):
-        await cq.answer("❌ Not authorised", show_alert=True)
-        return
-    wid = int(cq.data.split("_")[-1])
-    wd = await get_withdrawal(wid)
-    if not wd:
-        await cq.answer("Request not found.", show_alert=True)
-        return
-    if wd["status"] != "pending":
-        await cq.answer(f"Already {wd['status']}.", show_alert=True)
-        return
-    # Deduct locked coins
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET locked_coins=MAX(0,locked_coins-?) WHERE user_id=?",
-        (wd["coins"], wd["user_id"])
-    )
-    conn.commit()
-    conn.close()
-    await update_withdrawal_status(wid, "approved")
-    await cq.message.edit_reply_markup(reply_markup=None)
-    await cq.message.reply(f"✅ Request #{wid} <b>Approved</b>.")
-    try:
-        await bot.send_message(
-            wd["user_id"],
-            f"🎉 <b>Withdrawal Approved!</b>\n"
-            f"💰 <b>{wd['coins']} Coins</b> have been paid.\n"
-            f"Method: <b>{wd['method'].upper()}</b>"
-        )
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data.startswith("wd_reject_"))
-async def cb_wd_reject(cq: CallbackQuery):
-    if not await is_admin(cq.from_user.id):
-        await cq.answer("❌ Not authorised", show_alert=True)
-        return
-    wid = int(cq.data.split("_")[-1])
-    wd = await get_withdrawal(wid)
-    if not wd:
-        await cq.answer("Request not found.", show_alert=True)
-        return
-    if wd["status"] != "pending":
-        await cq.answer(f"Already {wd['status']}.", show_alert=True)
-        return
-    # Return locked coins to available
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET locked_coins=MAX(0,locked_coins-?), coins=coins+? WHERE user_id=?",
-        (wd["coins"], wd["coins"], wd["user_id"])
-    )
-    conn.commit()
-    conn.close()
-    await update_withdrawal_status(wid, "rejected")
-    await cq.message.edit_reply_markup(reply_markup=None)
-    await cq.message.reply(f"❌ Request #{wid} <b>Rejected</b>. Coins returned.")
-    try:
-        await bot.send_message(
-            wd["user_id"],
-            f"😞 <b>Withdrawal Rejected</b>\n"
-            f"Request #{wid} was rejected by admin.\n"
-            f"💰 {wd['coins']} Coins have been returned to your balance."
-        )
-    except Exception:
-        pass
-
-
-# =============================================================================
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ADMIN PANEL CALLBACKS
-# =============================================================================
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def admin_only(func):
-    """Decorator: reject non-admins silently."""
-    async def wrapper(cq: CallbackQuery, *args, **kwargs):
-        if not await is_admin(cq.from_user.id):
-            await cq.answer("❌ Admin only.", show_alert=True)
-            return
-        return await func(cq, *args, **kwargs)
-    wrapper.__name__ = func.__name__
-    return wrapper
+def is_admin(call: CallbackQuery) -> bool:
+    return call.from_user.id == ADMIN_ID
 
-
-@router.callback_query(F.data == "adm_back")
-@admin_only
-async def cb_adm_back(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    await state.clear()
-    await cq.message.edit_text("🛡 <b>Admin Panel</b>", reply_markup=kb_admin_panel())
-
-
-@router.callback_query(F.data == "adm_dashboard")
-@admin_only
-async def cb_adm_dashboard(cq: CallbackQuery):
-    await cq.answer()
-    total, active, pending, banned = await stats()
-    text = (
-        f"📊 <b>Dashboard</b>\n\n"
-        f"👥 Total Users   : <b>{total}</b>\n"
-        f"🟢 Active Today  : <b>{active}</b>\n"
-        f"⏳ Pending WDs   : <b>{pending}</b>\n"
-        f"🚫 Banned Users  : <b>{banned}</b>"
-    )
-    await cq.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="↩ Back", callback_data="adm_back")]
-    ]))
-
-
+# ── Broadcast ──
 @router.callback_query(F.data == "adm_broadcast")
-@admin_only
-async def cb_adm_broadcast(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
+async def adm_broadcast(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.broadcast)
-    await cq.message.answer("📣 Send the message you want to broadcast to all users:")
-
+    await call.message.answer("📢 Send the broadcast message (text/photo/video):")
+    await call.answer()
 
 @router.message(AdminStates.broadcast)
-async def process_broadcast(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_broadcast(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
-    await state.clear()
+
     conn = get_db()
     users = conn.execute("SELECT user_id FROM users WHERE is_banned=0").fetchall()
     conn.close()
+
     sent = failed = 0
-    for row in users:
+    for u in users:
         try:
-            await bot.copy_message(row["user_id"], message.chat.id, message.message_id)
+            await message.copy_to(u["user_id"])
             sent += 1
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
-        await asyncio.sleep(0.05)  # rate limiting
-    await message.answer(
-        f"📣 Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}",
-        reply_markup=kb_admin_panel(),
-    )
 
+    await message.answer(f"📢 Broadcast complete!\n✅ Sent: {sent}\n❌ Failed: {failed}")
+    await state.clear()
 
+# ── Ban ──
 @router.callback_query(F.data == "adm_ban")
-@admin_only
-async def cb_adm_ban(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
+async def adm_ban(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.ban_user)
-    await cq.message.answer("🚫 Enter the <b>User ID</b> to ban:")
-
+    await call.message.answer("🚫 Enter User ID to ban:")
+    await call.answer()
 
 @router.message(AdminStates.ban_user)
-async def process_ban(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_ban(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
-    await state.clear()
     try:
         uid = int(message.text.strip())
         conn = get_db()
         conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (uid,))
         conn.commit()
         conn.close()
-        await message.answer(f"🚫 User <code>{uid}</code> has been <b>banned</b>.", reply_markup=kb_admin_panel())
-        try:
-            await bot.send_message(uid, "🚫 You have been banned from this bot.")
-        except Exception:
-            pass
+        add_log(uid, "banned", f"by admin")
+        await message.answer(f"✅ User {uid} banned.")
     except ValueError:
-        await message.answer("⚠️ Invalid User ID.")
+        await message.answer("❌ Invalid user ID.")
+    await state.clear()
 
-
+# ── Unban ──
 @router.callback_query(F.data == "adm_unban")
-@admin_only
-async def cb_adm_unban(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
+async def adm_unban(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.unban_user)
-    await cq.message.answer("✅ Enter the <b>User ID</b> to unban:")
-
+    await call.message.answer("✅ Enter User ID to unban:")
+    await call.answer()
 
 @router.message(AdminStates.unban_user)
-async def process_unban(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_unban(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
-    await state.clear()
     try:
         uid = int(message.text.strip())
         conn = get_db()
         conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
         conn.commit()
         conn.close()
-        await message.answer(f"✅ User <code>{uid}</code> has been <b>unbanned</b>.", reply_markup=kb_admin_panel())
-        try:
-            await bot.send_message(uid, "✅ You have been unbanned. Use /start to continue.")
-        except Exception:
-            pass
+        await message.answer(f"✅ User {uid} unbanned.")
     except ValueError:
-        await message.answer("⚠️ Invalid User ID.")
+        await message.answer("❌ Invalid user ID.")
+    await state.clear()
 
+# ── Add Coins ──
+@router.callback_query(F.data == "adm_add_coins")
+async def adm_add_coins(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    await state.set_state(AdminStates.waiting_user_id)
+    await state.update_data(next_action="add_coins")
+    await call.message.answer("💰 Enter User ID:")
+    await call.answer()
 
+@router.callback_query(F.data == "adm_remove_coins")
+async def adm_remove_coins(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    await state.set_state(AdminStates.waiting_user_id)
+    await state.update_data(next_action="remove_coins")
+    await call.message.answer("➖ Enter User ID:")
+    await call.answer()
+
+@router.message(AdminStates.waiting_user_id)
+async def adm_get_uid(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    try:
+        uid = int(message.text.strip())
+        data = await state.get_data()
+        await state.update_data(target_uid=uid)
+        action = data.get("next_action")
+        if action == "add_coins":
+            await state.set_state(AdminStates.add_coins_amount)
+            await message.answer(f"💰 How many coins to ADD to user {uid}?")
+        else:
+            await state.set_state(AdminStates.remove_coins_amount)
+            await message.answer(f"➖ How many coins to REMOVE from user {uid}?")
+    except ValueError:
+        await message.answer("❌ Invalid ID.")
+        await state.clear()
+
+@router.message(AdminStates.add_coins_amount)
+async def do_add_coins(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    data = await state.get_data()
+    uid = data.get("target_uid")
+    try:
+        coins = int(message.text.strip())
+        add_coins(uid, coins)
+        add_log(uid, "admin_add_coins", f"+{coins}")
+        await message.answer(f"✅ Added {coins} coins to user {uid}.")
+    except ValueError:
+        await message.answer("❌ Invalid amount.")
+    await state.clear()
+
+@router.message(AdminStates.remove_coins_amount)
+async def do_remove_coins(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    data = await state.get_data()
+    uid = data.get("target_uid")
+    try:
+        coins = int(message.text.strip())
+        remove_coins(uid, coins)
+        add_log(uid, "admin_remove_coins", f"-{coins}")
+        await message.answer(f"✅ Removed {coins} coins from user {uid}.")
+    except ValueError:
+        await message.answer("❌ Invalid amount.")
+    await state.clear()
+
+# ── Pending Withdrawals ──
+@router.callback_query(F.data == "adm_withdrawals")
+async def adm_withdrawals(call: CallbackQuery):
+    if not is_admin(call): return
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM withdrawals WHERE status='pending' ORDER BY requested_at DESC LIMIT 10"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        await call.message.answer("✅ No pending withdrawals.")
+        await call.answer()
+        return
+    for w in rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"wadm_approve_{w['id']}"),
+            InlineKeyboardButton(text="❌ Reject",  callback_data=f"wadm_reject_{w['id']}"),
+        ]])
+        user = get_user(w["user_id"])
+        name = user["full_name"] if user else "Unknown"
+        text = (
+            f"💳 <b>Request #{w['id']}</b>\n"
+            f"👤 {name} ({w['user_id']})\n"
+            f"🪙 {w['coins']} coins → ₹{w['amount']}\n"
+            f"💳 Method: {w['method']}\n"
+            f"📅 {w['requested_at']}"
+        )
+        if w["method"] == "qr" and w["qr_file_id"]:
+            await call.message.answer_photo(photo=w["qr_file_id"], caption=text, reply_markup=kb)
+        else:
+            if w["upi_id"]:
+                text += f"\n💳 UPI: <code>{w['upi_id']}</code>"
+            await call.message.answer(text, reply_markup=kb)
+    await call.answer()
+
+# ── Edit Welcome ──
 @router.callback_query(F.data == "adm_edit_welcome")
-@admin_only
-async def cb_adm_edit_welcome(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
+async def adm_edit_welcome(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    current = get_setting("welcome_message")
     await state.set_state(AdminStates.edit_welcome)
-    current = await setting("welcome_caption")
-    await cq.message.answer(
-        f"✏️ <b>Current Welcome Message:</b>\n\n{current}\n\n"
-        "Send the <b>new welcome message</b>.\n"
-        "Use <code>{name}</code> as placeholder for user's name."
+    await call.message.answer(
+        f"📝 Current welcome message:\n\n<code>{current}</code>\n\nSend new welcome message:\n(Use {{name}} for user's name)"
     )
-
+    await call.answer()
 
 @router.message(AdminStates.edit_welcome)
-async def process_edit_welcome(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_welcome(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
+    set_setting("welcome_message", message.text)
+    await message.answer("✅ Welcome message updated.")
     await state.clear()
-    await set_setting("welcome_caption", message.text)
-    await message.answer("✅ Welcome message updated!", reply_markup=kb_admin_panel())
 
-
+# ── Edit Start Image ──
 @router.callback_query(F.data == "adm_edit_image")
-@admin_only
-async def cb_adm_edit_image(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    await state.set_state(AdminStates.edit_image)
-    await cq.message.answer(
-        "🖼 Send the new <b>start image</b>.\n\n"
-        "You can either:\n"
-        "• Send a <b>photo</b> directly\n"
-        "• Send an <b>image URL</b> (starting with https://)"
-    )
+async def adm_edit_image(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    await state.set_state(AdminStates.edit_start_image)
+    await call.message.answer("🖼 Send new start image URL:")
+    await call.answer()
 
-
-@router.message(AdminStates.edit_image, F.photo)
-async def process_edit_image(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+@router.message(AdminStates.edit_start_image)
+async def do_edit_image(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
+    set_setting("start_image", message.text.strip())
+    await message.answer("✅ Start image updated.")
     await state.clear()
-    file_id = message.photo[-1].file_id
-    await set_setting("start_image", file_id)
-    await set_setting("start_image_url", "")   # clear URL, use file_id
-    await message.answer("✅ Start image updated!", reply_markup=kb_admin_panel())
 
-
-@router.message(AdminStates.edit_image, F.text)
-async def process_edit_image_url(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
-        return
-    url = message.text.strip()
-    if not url.startswith("http"):
-        await message.answer("⚠️ Please send a valid image URL or a photo.")
-        return
-    await state.clear()
-    await set_setting("start_image_url", url)
-    await set_setting("start_image", "")       # clear cached file_id so URL is re-fetched
-    await message.answer("✅ Start image URL updated!", reply_markup=kb_admin_panel())
-
-
-@router.callback_query(F.data == "adm_edit_channels")
-@admin_only
-async def cb_adm_edit_channels(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    c1 = await setting("channel_1")
-    c2 = await setting("channel_2")
-    await cq.message.answer(
-        f"📢 <b>Current Channels:</b>\n"
-        f"1: <code>{c1}</code>\n"
-        f"2: <code>{c2}</code>\n\n"
-        "Send new <b>Channel 1</b> in format: <code>@username|https://t.me/username</code>"
-    )
+# ── Edit Channel 1 ──
+@router.callback_query(F.data == "adm_edit_ch1")
+async def adm_edit_ch1(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.edit_channel_1)
-
+    await call.message.answer(
+        f"📢 Current Channel 1: {get_setting('channel_1')}\n\n"
+        "Send new channel link (e.g. https://t.me/channel) and channel_id (e.g. @channel) separated by newline:"
+    )
+    await call.answer()
 
 @router.message(AdminStates.edit_channel_1)
-async def process_channel_1(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_ch1(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
-    await set_setting("channel_1", message.text.strip())
-    await state.set_state(AdminStates.edit_channel_2)
-    await message.answer("✅ Channel 1 saved.\nNow send new <b>Channel 2</b>:")
+    parts = message.text.strip().split("\n")
+    if len(parts) >= 2:
+        set_setting("channel_1", parts[0].strip())
+        set_setting("channel_1_id", parts[1].strip())
+        await message.answer("✅ Channel 1 updated.")
+    else:
+        await message.answer("❌ Send both link and @username on separate lines.")
+    await state.clear()
 
+# ── Edit Channel 2 ──
+@router.callback_query(F.data == "adm_edit_ch2")
+async def adm_edit_ch2(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    await state.set_state(AdminStates.edit_channel_2)
+    await call.message.answer(
+        f"📢 Current Channel 2: {get_setting('channel_2')}\n\n"
+        "Send new channel link and @username on separate lines:"
+    )
+    await call.answer()
 
 @router.message(AdminStates.edit_channel_2)
-async def process_channel_2(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_ch2(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
-    await set_setting("channel_2", message.text.strip())
+    parts = message.text.strip().split("\n")
+    if len(parts) >= 2:
+        set_setting("channel_2", parts[0].strip())
+        set_setting("channel_2_id", parts[1].strip())
+        await message.answer("✅ Channel 2 updated.")
+    else:
+        await message.answer("❌ Send both link and @username on separate lines.")
     await state.clear()
-    await message.answer("✅ Both channels updated!", reply_markup=kb_admin_panel())
 
-
+# ── Edit Referral Bonus ──
 @router.callback_query(F.data == "adm_edit_ref_bonus")
-@admin_only
-async def cb_adm_edit_ref_bonus(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    current = await setting("referral_bonus")
+async def adm_edit_ref_bonus(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.edit_referral_bonus)
-    await cq.message.answer(f"💰 Current Referral Bonus: <b>{current} Coins</b>\nEnter new value:")
-
+    await call.message.answer(f"🎁 Current referral bonus: {get_setting('referral_bonus')} coins\n\nEnter new value:")
+    await call.answer()
 
 @router.message(AdminStates.edit_referral_bonus)
-async def process_ref_bonus(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_ref_bonus(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
+    try:
+        val = int(message.text.strip())
+        set_setting("referral_bonus", str(val))
+        await message.answer(f"✅ Referral bonus set to {val} coins.")
+    except ValueError:
+        await message.answer("❌ Enter a valid number.")
     await state.clear()
-    val = message.text.strip()
-    if not val.isdigit():
-        await message.answer("⚠️ Please enter a valid number.")
-        return
-    await set_setting("referral_bonus", val)
-    await message.answer(f"✅ Referral bonus set to <b>{val} Coins</b>.", reply_markup=kb_admin_panel())
 
-
-@router.callback_query(F.data == "adm_edit_min_withdraw")
-@admin_only
-async def cb_adm_edit_min_withdraw(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    current = await setting("min_withdraw_coins")
+# ── Edit Min Withdraw ──
+@router.callback_query(F.data == "adm_edit_min_w")
+async def adm_edit_min_w(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
     await state.set_state(AdminStates.edit_min_withdraw)
-    await cq.message.answer(f"💵 Current Min Withdraw: <b>{current} Coins</b>\nEnter new value:")
-
+    await call.message.answer(f"💰 Current min withdraw: ₹{get_setting('min_withdraw')}\n\nEnter new value (in ₹):")
+    await call.answer()
 
 @router.message(AdminStates.edit_min_withdraw)
-async def process_min_withdraw(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_min_w(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
+    try:
+        val = int(message.text.strip())
+        set_setting("min_withdraw", str(val))
+        await message.answer(f"✅ Minimum withdrawal set to ₹{val}.")
+    except ValueError:
+        await message.answer("❌ Enter a valid number.")
     await state.clear()
-    val = message.text.strip()
-    if not val.isdigit():
-        await message.answer("⚠️ Please enter a valid number.")
-        return
-    await set_setting("min_withdraw_coins", val)
-    await message.answer(f"✅ Minimum withdraw set to <b>{val} Coins</b>.", reply_markup=kb_admin_panel())
 
-
+# ── Edit Coin Rewards ──
 @router.callback_query(F.data == "adm_edit_rewards")
-@admin_only
-async def cb_adm_edit_rewards(cq: CallbackQuery):
-    await cq.answer()
-    await cq.message.edit_text("🪙 <b>Edit Coin Rewards</b>\nSelect a reward to edit:",
-                               reply_markup=kb_admin_rewards())
+async def adm_edit_rewards(call: CallbackQuery):
+    if not is_admin(call): return
+    all_rewards = [k for k in [
+        "reward_watch_ads","reward_join_tg","reward_follow_insta","reward_subscribe_yt","reward_rate_app",
+        "reward_survey_1","reward_survey_2","reward_survey_3","reward_survey_4","reward_survey_5",
+        "reward_bexacart_1","reward_bexacart_2","reward_bexacart_3","reward_bexacart_4","reward_bexacart_5",
+        "reward_rewards_1","reward_rewards_2","reward_rewards_3","reward_rewards_4","reward_rewards_5",
+    ]]
+    buttons = []
+    for r in all_rewards:
+        label = r.replace("reward_", "").replace("_", " ").title()
+        val = get_setting(r, "0")
+        buttons.append([InlineKeyboardButton(text=f"{label}: {val}", callback_data=f"editr_{r}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")])
+    await call.message.answer("🪙 Select reward to edit:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
 
-
-@router.callback_query(F.data.startswith("adm_reward_"))
-@admin_only
-async def cb_adm_select_reward(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    reward_key = cq.data.replace("adm_reward_", "")
-    current = await setting(reward_key)
-    await state.update_data(edit_key=reward_key)
+@router.callback_query(F.data.startswith("editr_"))
+async def adm_editr_select(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    key = call.data[6:]
     await state.set_state(AdminStates.edit_coin_reward)
-    await cq.message.answer(
-        f"🪙 <b>{reward_key}</b>\nCurrent: <b>{current} Coins</b>\nEnter new value:"
-    )
-
+    await state.update_data(reward_key=key)
+    label = key.replace("reward_", "").replace("_", " ").title()
+    await call.message.answer(f"🪙 Enter new coin reward for <b>{label}</b>:")
+    await call.answer()
 
 @router.message(AdminStates.edit_coin_reward)
-async def process_coin_reward(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+async def do_edit_coin_reward(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
     data = await state.get_data()
-    reward_key = data.get("edit_key", "")
+    key  = data.get("reward_key")
+    try:
+        val = int(message.text.strip())
+        set_setting(key, str(val))
+        await message.answer(f"✅ Reward updated to {val} coins.")
+    except ValueError:
+        await message.answer("❌ Enter a valid number.")
     await state.clear()
-    val = message.text.strip()
-    if not val.isdigit():
-        await message.answer("⚠️ Please enter a valid number.")
-        return
-    await set_setting(reward_key, val)
-    await message.answer(f"✅ <b>{reward_key}</b> set to <b>{val} Coins</b>.", reply_markup=kb_admin_panel())
 
+# ── Edit Task URLs ──
+@router.callback_query(F.data == "adm_edit_urls")
+async def adm_edit_urls(call: CallbackQuery):
+    if not is_admin(call): return
+    all_urls = [
+        "url_watch_ads","url_join_tg","url_follow_insta","url_subscribe_yt","url_rate_app",
+        "url_survey_1","url_survey_2","url_survey_3","url_survey_4","url_survey_5",
+        "url_bexacart_1","url_bexacart_2","url_bexacart_3","url_bexacart_4","url_bexacart_5",
+        "url_rewards_1","url_rewards_2","url_rewards_3","url_rewards_4","url_rewards_5",
+    ]
+    buttons = []
+    for u in all_urls:
+        label = u.replace("url_", "").replace("_", " ").title()
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"editurl_{u}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Back", callback_data="adm_back")])
+    await call.message.answer("🔗 Select task URL to edit:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
 
-@router.callback_query(F.data == "adm_edit_links")
-@admin_only
-async def cb_adm_edit_links(cq: CallbackQuery):
-    await cq.answer()
-    await cq.message.edit_text("🔗 <b>Edit Links</b>\nSelect a link to edit:",
-                               reply_markup=kb_admin_links())
-
-
-@router.callback_query(F.data.startswith("adm_link_"))
-@admin_only
-async def cb_adm_select_link(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    link_key = cq.data.replace("adm_link_", "")
-    current = await setting(link_key)
-    await state.update_data(edit_key=link_key)
-    await state.set_state(AdminStates.edit_link)
-    await cq.message.answer(
-        f"🔗 <b>{link_key}</b>\nCurrent: <code>{current}</code>\nSend new URL:"
+@router.callback_query(F.data.startswith("editurl_"))
+async def adm_editurl_select(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call): return
+    key = call.data[8:]
+    await state.set_state(AdminStates.edit_task_url)
+    await state.update_data(url_key=key)
+    label = key.replace("url_", "").replace("_", " ").title()
+    current = get_setting(key, "")
+    await call.message.answer(
+        f"🔗 Current URL for <b>{label}</b>:\n<code>{current}</code>\n\nEnter new URL:"
     )
+    await call.answer()
 
-
-@router.message(AdminStates.edit_link)
-async def process_link(message: Message, state: FSMContext):
-    if not await is_admin(message.from_user.id):
+@router.message(AdminStates.edit_task_url)
+async def do_edit_task_url(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
         return
     data = await state.get_data()
-    link_key = data.get("edit_key", "")
+    key  = data.get("url_key")
+    url  = message.text.strip()
+    set_setting(key, url)
+    await message.answer("✅ URL updated.")
     await state.clear()
-    url = message.text.strip()
-    if not url.startswith("http"):
-        await message.answer("⚠️ URL must start with http:// or https://")
-        return
-    await set_setting(link_key, url)
-    await message.answer(f"✅ <b>{link_key}</b> updated.", reply_markup=kb_admin_panel())
 
+# ── Toggle Tasks ──
+@router.callback_query(F.data == "adm_toggle_tasks")
+async def adm_toggle_tasks(call: CallbackQuery):
+    if not is_admin(call): return
+    current = get_setting("tasks_enabled", "1")
+    new_val = "0" if current == "1" else "1"
+    set_setting("tasks_enabled", new_val)
+    status = "Enabled ✅" if new_val == "1" else "Disabled ❌"
+    await call.answer(f"Tasks {status}", show_alert=True)
 
+# ── Logs ──
 @router.callback_query(F.data == "adm_logs")
-@admin_only
-async def cb_adm_logs(cq: CallbackQuery):
-    await cq.answer()
+async def adm_logs(call: CallbackQuery):
+    if not is_admin(call): return
     conn = get_db()
-    rows = conn.execute(
-        "SELECT user_id, action, detail, created_at FROM logs ORDER BY id DESC LIMIT 20"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM logs ORDER BY created_at DESC LIMIT 20").fetchall()
     conn.close()
     if not rows:
-        await cq.message.answer("📋 No logs yet.", reply_markup=kb_admin_panel())
+        await call.message.answer("📊 No logs yet.")
+        await call.answer()
         return
-    lines = [f"<b>{r['created_at'][:16]}</b> | {r['user_id']} | {r['action']} | {r['detail']}"
-             for r in rows]
-    await cq.message.answer(
-        "📋 <b>Last 20 Logs:</b>\n\n" + "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="↩ Back", callback_data="adm_back")]
-        ]),
-    )
+    text = "📊 <b>Recent Logs (last 20)</b>\n\n"
+    for r in rows:
+        text += f"• [{r['created_at'][:16]}] <b>{r['action']}</b> | UID:{r['user_id']} | {r['details']}\n"
+    await call.message.answer(text[:4096])
+    await call.answer()
 
+@router.callback_query(F.data == "adm_back")
+async def adm_back(call: CallbackQuery):
+    if not is_admin(call): return
+    await call.answer()
 
-@router.callback_query(F.data == "adm_pending_wd")
-@admin_only
-async def cb_adm_pending_wd(cq: CallbackQuery):
-    await cq.answer()
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM withdrawals WHERE status='pending' ORDER BY id DESC LIMIT 10"
-    ).fetchall()
-    conn.close()
-    if not rows:
-        await cq.message.answer("⏳ No pending withdrawals.", reply_markup=kb_admin_panel())
-        return
-    for wd in rows:
-        text = (
-            f"📥 <b>Request #{wd['id']}</b>\n"
-            f"👤 User ID: <code>{wd['user_id']}</code>\n"
-            f"💰 Coins: <b>{wd['coins']}</b>\n"
-            f"📬 Method: <b>{wd['method'].upper()}</b>\n"
-            f"📝 Detail: <code>{wd['detail'] if wd['method']=='upi' else 'QR Photo'}</code>\n"
-            f"🕐 Requested: {wd['requested_at'][:16]}"
-        )
-        if wd["method"] == "qr":
-            await bot.send_photo(
-                cq.from_user.id, photo=wd["detail"],
-                caption=text, reply_markup=kb_approve_reject(wd["id"])
-            )
-        else:
-            await cq.message.answer(text, reply_markup=kb_approve_reject(wd["id"]))
-
-
-# =============================================================================
-# ERROR HANDLER
-# =============================================================================
-
-@dp.error()
-async def error_handler(event, exception: Exception):
-    logger.error(f"Unhandled error: {exception}", exc_info=True)
-    try:
-        # Try to notify admin
-        await bot.send_message(ADMIN_ID, f"⚠️ Bot Error:\n<code>{str(exception)[:500]}</code>")
-    except Exception:
-        pass
-
-
-# =============================================================================
-# STARTUP / SHUTDOWN
-# =============================================================================
-
-async def on_startup():
-    init_db()
-    me = await bot.get_me()
-    logger.info(f"Bot started: @{me.username}")
-    try:
-        await bot.send_message(ADMIN_ID, f"✅ Bot <b>@{me.username}</b> started successfully.")
-    except Exception:
-        pass
-
-
-async def on_shutdown():
-    logger.info("Bot shutting down.")
-    await bot.session.close()
-
-
-# =============================================================================
-# MAIN
-# =============================================================================
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# STARTUP
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def main():
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-
+    init_db()
+    logger.info("Bot starting...")
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
