@@ -143,10 +143,11 @@ def init_db():
             "❖ Tap Verify After Joining\n\n"
             "Share your link & earn rewards on every purchase your friends make"
         ),
-        "start_image": "",          # file_id; empty = no image
+        "start_image": "",          # file_id (after first send) or empty
+        "start_image_url": "https://i.postimg.cc/02GRzWDB/file-00000000d74071fa86d1d103d4ac7342.png",
         # force-join channels  (format: @channelusername|https://t.me/...)
-        "channel_1": "@yourchannel1|https://t.me/yourchannel1",
-        "channel_2": "@yourchannel2|https://t.me/yourchannel2",
+        "channel_1": "@Moneyearning_updates|https://t.me/Moneyearning_updates",
+        "channel_2": "@bexamoneygroup|https://t.me/bexamoneygroup",
         # coins
         "referral_bonus":    "50",
         "coins_per_rupee":   "40",    # 1000 coins = ₹25 → 40 coins/₹
@@ -445,10 +446,15 @@ class AdminStates(StatesGroup):
 # KEYBOARDS
 # =============================================================================
 
-def kb_start(channel_1_url: str, channel_2_url: str) -> InlineKeyboardMarkup:
+def kb_start(channel_1_url: str, channel_2_url: str, user_id: int = 0) -> InlineKeyboardMarkup:
+    # Telegram native share URL — opens share dialog with referral link pre-filled
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
+    share_text = f"🤑 Join me & earn ₹250 rewards!\n{ref_link}"
+    import urllib.parse
+    share_url = f"https://t.me/share/url?url={urllib.parse.quote(ref_link)}&text={urllib.parse.quote(share_text)}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="➜ Share Link",   callback_data="share_link"),
+            InlineKeyboardButton(text="➜ Share Link", url=share_url),
         ],
         [
             InlineKeyboardButton(text="➜ Join 1", url=channel_1_url),
@@ -715,7 +721,9 @@ async def check_membership(user_id: int) -> bool:
 async def send_start_screen(user_id: int, name: str, referred_by: int = 0):
     """Send the start / welcome screen to a user."""
     caption_tpl = await setting("welcome_caption")
-    caption = caption_tpl.replace("{name}", name)
+    # Use only the first name for a cleaner display
+    first_name = name.split()[0] if name else name
+    caption = caption_tpl.replace("{name}", first_name)
     caption += f"\n\n🔗 Your Referral Link:\n<code>https://t.me/{BOT_USERNAME}?start={user_id}</code>"
 
     ch1_raw = await setting("channel_1")
@@ -723,13 +731,34 @@ async def send_start_screen(user_id: int, name: str, referred_by: int = 0):
     ch1_url = ch1_raw.split("|")[-1].strip()
     ch2_url = ch2_raw.split("|")[-1].strip()
 
-    image_id = await setting("start_image")
-    markup = kb_start(ch1_url, ch2_url)
+    markup = kb_start(ch1_url, ch2_url, user_id)
+
+    # Try cached file_id first, then download from URL, then text-only fallback
+    image_id  = await setting("start_image")
+    image_url = await setting("start_image_url")
 
     if image_id:
-        await bot.send_photo(user_id, photo=image_id, caption=caption, reply_markup=markup)
-    else:
-        await bot.send_message(user_id, caption, reply_markup=markup)
+        # Use cached Telegram file_id
+        try:
+            await bot.send_photo(user_id, photo=image_id, caption=caption, reply_markup=markup)
+            return
+        except Exception:
+            # file_id stale — clear it and fall through
+            await set_setting("start_image", "")
+
+    if image_url:
+        # Send via URL; Telegram will download it
+        try:
+            msg = await bot.send_photo(user_id, photo=image_url, caption=caption, reply_markup=markup)
+            # Cache the file_id for future sends (faster + avoids re-downloading)
+            if msg.photo:
+                await set_setting("start_image", msg.photo[-1].file_id)
+            return
+        except Exception as e:
+            logger.warning(f"Could not send image from URL: {e}")
+
+    # Final fallback: text only
+    await bot.send_message(user_id, caption, reply_markup=markup)
 
 
 async def coins_to_rupees(coins: int) -> str:
@@ -912,20 +941,8 @@ async def cb_verify(cq: CallbackQuery):
         await cq.message.answer(
             "⚠️ You haven't joined both channels yet.\n"
             "Please join both and then tap <b>VERIFY</b> again.",
-            reply_markup=kb_start(ch1_url, ch2_url),
+            reply_markup=kb_start(ch1_url, ch2_url, cq.from_user.id),
         )
-
-
-# ── Share link ────────────────────────────────────────────────────────────────
-@router.callback_query(F.data == "share_link")
-async def cb_share_link(cq: CallbackQuery):
-    await cq.answer()
-    uid = cq.from_user.id
-    link = f"https://t.me/{BOT_USERNAME}?start={uid}"
-    await cq.message.answer(
-        f"🔗 <b>Your Referral Link</b>\n\n<code>{link}</code>\n\n"
-        "Share this link with friends and earn a bonus for every friend who joins!"
-    )
 
 
 # ── Back to main ──────────────────────────────────────────────────────────────
@@ -1341,7 +1358,12 @@ async def process_edit_welcome(message: Message, state: FSMContext):
 async def cb_adm_edit_image(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
     await state.set_state(AdminStates.edit_image)
-    await cq.message.answer("🖼 Send the new <b>start image</b> (photo):")
+    await cq.message.answer(
+        "🖼 Send the new <b>start image</b>.\n\n"
+        "You can either:\n"
+        "• Send a <b>photo</b> directly\n"
+        "• Send an <b>image URL</b> (starting with https://)"
+    )
 
 
 @router.message(AdminStates.edit_image, F.photo)
@@ -1351,7 +1373,22 @@ async def process_edit_image(message: Message, state: FSMContext):
     await state.clear()
     file_id = message.photo[-1].file_id
     await set_setting("start_image", file_id)
+    await set_setting("start_image_url", "")   # clear URL, use file_id
     await message.answer("✅ Start image updated!", reply_markup=kb_admin_panel())
+
+
+@router.message(AdminStates.edit_image, F.text)
+async def process_edit_image_url(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    url = message.text.strip()
+    if not url.startswith("http"):
+        await message.answer("⚠️ Please send a valid image URL or a photo.")
+        return
+    await state.clear()
+    await set_setting("start_image_url", url)
+    await set_setting("start_image", "")       # clear cached file_id so URL is re-fetched
+    await message.answer("✅ Start image URL updated!", reply_markup=kb_admin_panel())
 
 
 @router.callback_query(F.data == "adm_edit_channels")
